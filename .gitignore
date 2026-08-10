@@ -1,0 +1,9 @@
+venv/
+train/
+test/
+*.jpg
+*.jpeg
+*.png
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
