@@ -21,16 +21,18 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=0)
 
     model = models.resnet18(weights=None)
-    model.fc = nn.Linear(model.fc.in_features, 2)
-    model.load_state_dict(torch.load('outputs/checkpoints/baseline_resnet18_final.pth'))
+    model.fc = nn.Sequential(
+        nn.Dropout(p=0.4),
+        nn.Linear(model.fc.in_features, 2)
+    )
+    model.load_state_dict(torch.load('outputs/checkpoints/frozen_resnet18_best.pth'))
     model = model.to(device)
     model.eval()
 
     all_preds, all_labels = [], []
 
     with torch.no_grad():
-        loop = tqdm(test_loader, desc="Evaluating", leave=True)
-        for images, labels in loop:
+        for images, labels in tqdm(test_loader, desc="Evaluating"):
             images = images.to(device)
             outputs = model(images)
             _, predicted = torch.max(outputs, 1)
