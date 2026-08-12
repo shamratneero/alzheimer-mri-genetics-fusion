@@ -6,4 +6,5 @@ test/
 *.png
 .ipynb_checkpoints/
 __pycache__/
-*.pycoutputs/ 
+*.pyc
+outputs/
