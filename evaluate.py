@@ -25,7 +25,7 @@ def main():
         nn.Dropout(p=0.4),
         nn.Linear(model.fc.in_features, 2)
     )
-    model.load_state_dict(torch.load('outputs/checkpoints/frozen_resnet18_best.pth'))
+    model.load_state_dict(torch.load('outputs/checkpoints/frozen_resnet18_epoch{epoch+1}.pth'))
     model = model.to(device)
     model.eval()
 

@@ -33,8 +33,7 @@ def main():
         param.requires_grad = False
 
     # --- Unfreeze only the last block (layer4) + classifier head ---
-    for param in model.layer4.parameters():
-        param.requires_grad = True
+    
 
     model.fc = nn.Sequential(
         nn.Dropout(p=0.4),
@@ -100,12 +99,12 @@ def main():
 
         scheduler.step()
 
-        checkpoint_path = os.path.join(OUTPUT_DIR, f'frozen_resnet18_epoch{epoch+1}.pth')
+        checkpoint_path = os.path.join(OUTPUT_DIR, f'linearprobe_resnet18_epoch{epoch+1}.pth')
         torch.save(model.state_dict(), checkpoint_path)
 
         if test_acc > best_test_acc:
             best_test_acc = test_acc
-            best_path = os.path.join(OUTPUT_DIR, 'frozen_resnet18_best.pth')
+            best_path = os.path.join(OUTPUT_DIR, 'linearprobe_resnet18_best.pth')
             torch.save(model.state_dict(), best_path)
             print(f"New best test acc: {test_acc:.4f} - saved as best checkpoint")
 
