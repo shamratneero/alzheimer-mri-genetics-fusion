@@ -8,3 +8,5 @@ test/
 __pycache__/
 *.pyc
 outputs/
+preprocessed/ 
+*.nii.gz 
