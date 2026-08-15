@@ -42,8 +42,15 @@ class ImagingBranch3D(nn.Module):
         self.block4 = ConvBlock3D(base_ch * 4, base_ch * 8)      # 16  -> 8
         self.block5 = ConvBlock3D(base_ch * 8, base_ch * 16)     # 8   -> 4
         self.gap = nn.AdaptiveAvgPool3d(1)                       # -> 1x1x1
-        self.dropout = nn.Dropout(dropout)
         self.out_dim = base_ch * 16
+        # Global average pooling over a 4x4x4 grid averages away most of the
+        # variance, leaving features with std ~0.005 - roughly 45x weaker than
+        # the clinical branch's output. LayerNorm rescales them to unit scale so
+        # neither branch is privileged purely by feature magnitude, both in
+        # fusion (where the larger branch would otherwise dominate the
+        # concatenated vector) and across the single-branch ablations.
+        self.norm = nn.LayerNorm(self.out_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         x = self.block1(x)
@@ -52,6 +59,7 @@ class ImagingBranch3D(nn.Module):
         x = self.block4(x)
         x = self.block5(x)
         x = self.gap(x).flatten(1)          # (B, out_dim)
+        x = self.norm(x)
         return self.dropout(x)
 
 
@@ -65,6 +73,9 @@ class ClinicalBranch(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden, out_dim),
             nn.ReLU(inplace=True),
+            # Matches the LayerNorm on the imaging branch output so both
+            # branches hand the classifier features on the same scale.
+            nn.LayerNorm(out_dim),
         )
         self.out_dim = out_dim
 
@@ -83,12 +94,27 @@ class FusionModel(nn.Module):
                                        hidden=clinical_hidden, out_dim=clinical_out)
 
         fused_dim = self.imaging.out_dim + self.clinical.out_dim
-        self.classifier = nn.Sequential(
-            nn.Linear(fused_dim, fusion_hidden),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_hidden, n_classes),
-        )
+
+        def _make_head(in_dim):
+            """Classifier head sized to its actual input width.
+
+            Each mode gets its own head rather than zero-padding into one
+            shared `fused_dim`-wide head. Reason: nn.Linear initialises weights
+            with std ~ 1/sqrt(fan_in), so routing a 16-d clinical vector through
+            a 272-wide head (256 slots permanently zero) starts its weights
+            ~4.4x too small and systematically handicaps the clinical-only
+            ablation relative to imaging-only. Sizing each head to its real
+            input makes the three modes genuinely comparable."""
+            return nn.Sequential(
+                nn.Linear(in_dim, fusion_hidden),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+                nn.Linear(fusion_hidden, n_classes),
+            )
+
+        self.classifier = _make_head(fused_dim)                    # fusion
+        self.classifier_imaging = _make_head(self.imaging.out_dim)   # imaging-only
+        self.classifier_clinical = _make_head(self.clinical.out_dim) # clinical-only
 
     def forward(self, volume, clinical):
         img_feat = self.imaging(volume)
@@ -97,24 +123,16 @@ class FusionModel(nn.Module):
         return self.classifier(fused)
 
     def forward_imaging_only(self, volume):
-        """For the imaging-only ablation (no clinical features)."""
+        """Imaging-only ablation: MRI features through their own head."""
         img_feat = self.imaging(volume)
-        zeros = torch.zeros(volume.size(0), self.clinical.out_dim,
-                           device=volume.device)
-        fused = torch.cat([img_feat, zeros], dim=1)
-        return self.classifier(fused)
+        return self.classifier_imaging(img_feat)
 
     def forward_clinical_only(self, clinical):
-        """For the clinical-only ablation (APOE + age, no imaging).
-        Mirrors forward_imaging_only so all three modes (imaging_only,
-        clinical_only, fusion) are trained/evaluated through the exact same
-        classifier head and pipeline - a true apples-to-apples comparison,
-        not a separate logistic-regression baseline computed differently."""
+        """Clinical-only ablation (APOE + age, no imaging): clinical features
+        through their own correctly-sized head, so this branch is not
+        disadvantaged by the fusion head's much larger fan_in."""
         clin_feat = self.clinical(clinical)
-        zeros = torch.zeros(clinical.size(0), self.imaging.out_dim,
-                           device=clinical.device)
-        fused = torch.cat([zeros, clin_feat], dim=1)
-        return self.classifier(fused)
+        return self.classifier_clinical(clin_feat)
 
 
 if __name__ == "__main__":
