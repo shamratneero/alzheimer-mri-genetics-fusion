@@ -12,6 +12,7 @@ same 160^3 cache can be reused at different training resolutions without
 re-preprocessing.
 """
 import os
+import math
 import numpy as np
 import pandas as pd
 import torch
@@ -62,12 +63,53 @@ class OASIS3Dataset(Dataset):
         return t
 
     def _augment(self, t):
-        """Light, label-preserving augmentation: random flip + small intensity jitter."""
+        """Label-preserving 3D augmentation: flip + small translation + small
+        rotation + intensity scale/shift + light gaussian noise.
+
+        All ops preserve anatomy/label; angles and shifts are kept small so
+        volumes stay physiologically plausible (this is brain MRI, not a
+        natural-image classification task)."""
         if torch.rand(1).item() < 0.5:
             t = torch.flip(t, dims=[1])           # left-right flip (sagittal axis)
+
+        if torch.rand(1).item() < 0.5:
+            shifts = torch.randint(-4, 5, (3,)).tolist()   # +/- 4 voxels per axis
+            t = torch.roll(t, shifts=shifts, dims=[1, 2, 3])
+
+        if torch.rand(1).item() < 0.5:
+            axis = torch.randint(0, 3, (1,)).item()
+            angle_deg = (torch.rand(1).item() * 2 - 1) * 10.0   # +/- 10 degrees
+            t = self._rotate3d(t, angle_deg, axis)
+
+        if torch.rand(1).item() < 0.4:
+            scale = 0.9 + torch.rand(1).item() * 0.2    # 0.9 - 1.1
+            shift = (torch.rand(1).item() * 2 - 1) * 0.05
+            t = t * scale + shift
+
         if torch.rand(1).item() < 0.3:
             t = t + torch.randn_like(t) * 0.02     # small gaussian noise
+
         return t
+
+    @staticmethod
+    def _rotate3d(t, angle_deg, axis):
+        """Rotate a (1, D, H, W) volume by angle_deg around one of the 3 axes
+        using an affine grid (trilinear resample, zero-padded border)."""
+        angle = math.radians(angle_deg)
+        cos, sin = math.cos(angle), math.sin(angle)
+
+        if axis == 0:      # rotate in the H-W plane
+            R = torch.tensor([[1, 0, 0], [0, cos, -sin], [0, sin, cos]])
+        elif axis == 1:    # rotate in the D-W plane
+            R = torch.tensor([[cos, 0, sin], [0, 1, 0], [-sin, 0, cos]])
+        else:               # rotate in the D-H plane
+            R = torch.tensor([[cos, -sin, 0], [sin, cos, 0], [0, 0, 1]])
+
+        theta = torch.cat([R, torch.zeros(3, 1)], dim=1).unsqueeze(0).float()  # (1,3,4)
+        grid = F.affine_grid(theta, size=(1, 1, *t.shape[1:]), align_corners=False)
+        rotated = F.grid_sample(t.unsqueeze(0), grid, mode="bilinear",
+                                padding_mode="zeros", align_corners=False)
+        return rotated.squeeze(0)
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]

@@ -19,11 +19,27 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import (roc_auc_score, accuracy_score, balanced_accuracy_score,
-                             confusion_matrix, classification_report)
+                             confusion_matrix, classification_report, brier_score_loss)
 
 from dataset_3d import OASIS3Dataset, build_splits
 from model_3d import FusionModel
 from tqdm import tqdm
+
+
+def expected_calibration_error(probs, labels, n_bins=10):
+    """ECE: weighted average gap between confidence and accuracy across
+    equal-width probability bins. 0 = perfectly calibrated."""
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece, n = 0.0, len(probs)
+    for i in range(n_bins):
+        lo, hi = bins[i], bins[i + 1]
+        mask = (probs >= lo) & (probs < hi if i < n_bins - 1 else probs <= hi)
+        if mask.sum() == 0:
+            continue
+        bin_acc = labels[mask].mean()
+        bin_conf = probs[mask].mean()
+        ece += (mask.sum() / n) * abs(bin_acc - bin_conf)
+    return ece
 
 COHORT   = "oasis3_cohort.csv"
 PRE_DIR  = r"D:\alhseimer\preprocessed"
@@ -68,6 +84,8 @@ def evaluate(model, loader, device, criterion, imaging_only=False):
         "accuracy": accuracy_score(labels, preds),
         "balanced_accuracy": balanced_accuracy_score(labels, preds),
         "auc": roc_auc_score(labels, probs) if len(set(labels)) > 1 else float("nan"),
+        "brier": brier_score_loss(labels, probs),
+        "ece": expected_calibration_error(probs, labels, n_bins=10),
     }
     tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
     metrics["sensitivity"] = tp / (tp + fn) if (tp + fn) else 0.0   # recall on AD
@@ -90,6 +108,8 @@ def main():
     ap.add_argument("--imaging_only", action="store_true",
                     help="ablation: ignore clinical features")
     ap.add_argument("--tag", type=str, default="fusion")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from <tag>_latest.pt if it exists (power-cut recovery)")
     args = ap.parse_args()
 
     set_seed(args.seed)
@@ -136,9 +156,27 @@ def main():
     # ---------------- training ----------------
     history = []
     best_auc, best_epoch, epochs_no_improve = -1.0, -1, 0
+    start_epoch = 1
+
+    latest_path = os.path.join(CKPT_DIR, f"{args.tag}_latest.pt")
+    if args.resume and os.path.exists(latest_path):
+        ckpt = torch.load(latest_path, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        history = ckpt["history"]
+        best_auc = ckpt["best_auc"]
+        best_epoch = ckpt["best_epoch"]
+        epochs_no_improve = ckpt["epochs_no_improve"]
+        start_epoch = ckpt["epoch"] + 1
+        print(f"Resumed from epoch {ckpt['epoch']}  "
+              f"(best val AUC so far {best_auc:.3f} @ epoch {best_epoch})\n")
+    elif args.resume:
+        print(f"--resume passed but no checkpoint found at {latest_path}; starting fresh.\n")
+
     t_start = time.time()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         running_loss, n_seen = 0.0, 0
         train_probs, train_labels = [], []
@@ -177,6 +215,8 @@ def main():
             "val_auc": round(val_metrics["auc"], 4),
             "val_acc": round(val_metrics["accuracy"], 4),
             "val_bal_acc": round(val_metrics["balanced_accuracy"], 4),
+            "val_brier": round(val_metrics["brier"], 4),
+            "val_ece": round(val_metrics["ece"], 4),
             "val_sens": round(val_metrics["sensitivity"], 4),
             "val_spec": round(val_metrics["specificity"], 4),
             "lr": optimizer.param_groups[0]["lr"],
@@ -186,7 +226,8 @@ def main():
         gap = train_auc - val_metrics["auc"]
         print(f"  epoch {epoch:3d}  train_loss {train_loss:.4f}  train_auc {train_auc:.3f}  |  "
               f"val_loss {val_metrics['loss']:.4f}  val_auc {val_metrics['auc']:.3f}  "
-              f"val_bacc {val_metrics['balanced_accuracy']:.3f}  (gap {gap:+.3f})")
+              f"val_bacc {val_metrics['balanced_accuracy']:.3f}  val_ece {val_metrics['ece']:.3f}  "
+              f"(gap {gap:+.3f})")
 
         if val_metrics["auc"] > best_auc:
             best_auc, best_epoch, epochs_no_improve = val_metrics["auc"], epoch, 0
@@ -196,9 +237,18 @@ def main():
             print(f"           -> new best val AUC {best_auc:.3f}, checkpoint saved")
         else:
             epochs_no_improve += 1
-            if epochs_no_improve >= args.patience:
-                print(f"\nEarly stopping: no val AUC improvement for {args.patience} epochs.")
-                break
+
+        # always save a full-state "latest" checkpoint so an interrupted run
+        # (e.g. power cut) can resume from here rather than restarting
+        torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(), "epoch": epoch,
+                    "history": history, "best_auc": best_auc, "best_epoch": best_epoch,
+                    "epochs_no_improve": epochs_no_improve, "args": vars(args)},
+                   os.path.join(CKPT_DIR, f"{args.tag}_latest.pt"))
+
+        if epochs_no_improve >= args.patience:
+            print(f"\nEarly stopping: no val AUC improvement for {args.patience} epochs.")
+            break
 
     mins = (time.time() - t_start) / 60
     print(f"\nTraining finished in {mins:.1f} min.  Best val AUC {best_auc:.3f} (epoch {best_epoch})")
@@ -214,6 +264,8 @@ def main():
     for k, v in test_metrics.items():
         print(f"  {k:<20} {v:.4f}")
 
+    print(f"\n  Calibration  -  Brier: {test_metrics['brier']:.4f}   ECE: {test_metrics['ece']:.4f}"
+          f"   (lower is better for both; ECE=0 is perfect calibration)")
     print(f"\n  Demographics-only baseline AUC was 0.826")
     delta = test_metrics["auc"] - 0.826
     print(f"  This model's test AUC        : {test_metrics['auc']:.3f}  ({delta:+.3f})")
