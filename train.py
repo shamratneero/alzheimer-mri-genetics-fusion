@@ -177,7 +177,10 @@ def main():
 
     latest_path = os.path.join(CKPT_DIR, f"{args.tag}_latest.pt")
     if args.resume and os.path.exists(latest_path):
-        ckpt = torch.load(latest_path, map_location=device)
+        # weights_only=False: PyTorch 2.6 flipped this default to True, which
+        # rejects the numpy scalars stored in `history`. These checkpoints are
+        # written by this script, so loading them fully is safe.
+        ckpt = torch.load(latest_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
@@ -271,7 +274,7 @@ def main():
     print(f"\nTraining finished in {mins:.1f} min.  Best val AUC {best_auc:.3f} (epoch {best_epoch})")
 
     # ---------------- final test evaluation ----------------
-    ckpt = torch.load(os.path.join(CKPT_DIR, f"{args.tag}_best.pt"))
+    ckpt = torch.load(os.path.join(CKPT_DIR, f"{args.tag}_best.pt"), weights_only=False)
     model.load_state_dict(ckpt["model"])
     test_metrics, test_raw = evaluate(model, test_loader, device, criterion, args.imaging_only, args.clinical_only)
 
