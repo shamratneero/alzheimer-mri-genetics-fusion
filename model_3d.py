@@ -104,6 +104,18 @@ class FusionModel(nn.Module):
         fused = torch.cat([img_feat, zeros], dim=1)
         return self.classifier(fused)
 
+    def forward_clinical_only(self, clinical):
+        """For the clinical-only ablation (APOE + age, no imaging).
+        Mirrors forward_imaging_only so all three modes (imaging_only,
+        clinical_only, fusion) are trained/evaluated through the exact same
+        classifier head and pipeline - a true apples-to-apples comparison,
+        not a separate logistic-regression baseline computed differently."""
+        clin_feat = self.clinical(clinical)
+        zeros = torch.zeros(clinical.size(0), self.imaging.out_dim,
+                           device=clinical.device)
+        fused = torch.cat([zeros, clin_feat], dim=1)
+        return self.classifier(fused)
+
 
 if __name__ == "__main__":
     import torch

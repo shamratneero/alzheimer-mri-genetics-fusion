@@ -57,8 +57,18 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
+def forward_pass(model, vol, clin, imaging_only=False, clinical_only=False):
+    """Single place that decides which branch(es) of the model see data,
+    so imaging_only / clinical_only / fusion all route through it identically."""
+    if imaging_only:
+        return model.forward_imaging_only(vol)
+    if clinical_only:
+        return model.forward_clinical_only(clin)
+    return model(vol, clin)
+
+
 @torch.no_grad()
-def evaluate(model, loader, device, criterion, imaging_only=False):
+def evaluate(model, loader, device, criterion, imaging_only=False, clinical_only=False):
     """Run the model over a loader and return metrics + raw predictions."""
     model.eval()
     losses, probs, labels, subjects = [], [], [], []
@@ -68,7 +78,7 @@ def evaluate(model, loader, device, criterion, imaging_only=False):
         clin = batch["clinical"].to(device, non_blocking=True)
         y = batch["label"].to(device, non_blocking=True)
 
-        out = model.forward_imaging_only(vol) if imaging_only else model(vol, clin)
+        out = forward_pass(model, vol, clin, imaging_only, clinical_only)
         loss = criterion(out, y)
 
         losses.append(loss.item() * y.size(0))
@@ -107,15 +117,22 @@ def main():
     ap.add_argument("--patience", type=int, default=15, help="early stopping patience")
     ap.add_argument("--imaging_only", action="store_true",
                     help="ablation: ignore clinical features")
+    ap.add_argument("--clinical_only", action="store_true",
+                    help="ablation: ignore imaging, APOE+age only - trained/evaluated "
+                         "through the same pipeline as imaging_only and fusion for a "
+                         "true apples-to-apples comparison")
     ap.add_argument("--tag", type=str, default="fusion")
     ap.add_argument("--resume", action="store_true",
                     help="resume from <tag>_latest.pt if it exists (power-cut recovery)")
     args = ap.parse_args()
+    if args.imaging_only and args.clinical_only:
+        raise ValueError("--imaging_only and --clinical_only are mutually exclusive")
 
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    mode = "imaging_only" if args.imaging_only else ("clinical_only" if args.clinical_only else "fusion")
     print(f"Device: {device}")
-    print(f"Run tag: {args.tag}  |  imaging_only={args.imaging_only}\n")
+    print(f"Run tag: {args.tag}  |  mode={mode}\n")
 
     # ---------------- data ----------------
     train_df, val_df, test_df = build_splits(COHORT, seed=args.seed)
@@ -188,7 +205,7 @@ def main():
             y = batch["label"].to(device, non_blocking=True)
 
             optimizer.zero_grad()
-            out = model.forward_imaging_only(vol) if args.imaging_only else model(vol, clin)
+            out = forward_pass(model, vol, clin, args.imaging_only, args.clinical_only)
             loss = criterion(out, y)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -204,7 +221,7 @@ def main():
         train_auc = roc_auc_score(train_labels, train_probs) if len(set(train_labels)) > 1 else float("nan")
         train_loss = running_loss / n_seen
 
-        val_metrics, _ = evaluate(model, val_loader, device, criterion, args.imaging_only)
+        val_metrics, _ = evaluate(model, val_loader, device, criterion, args.imaging_only, args.clinical_only)
         scheduler.step(val_metrics["auc"])
 
         rec = {
@@ -256,7 +273,7 @@ def main():
     # ---------------- final test evaluation ----------------
     ckpt = torch.load(os.path.join(CKPT_DIR, f"{args.tag}_best.pt"))
     model.load_state_dict(ckpt["model"])
-    test_metrics, test_raw = evaluate(model, test_loader, device, criterion, args.imaging_only)
+    test_metrics, test_raw = evaluate(model, test_loader, device, criterion, args.imaging_only, args.clinical_only)
 
     print(f"\n{'='*60}")
     print(f"TEST SET RESULTS  (best checkpoint, epoch {ckpt['epoch']})")
@@ -266,7 +283,8 @@ def main():
 
     print(f"\n  Calibration  -  Brier: {test_metrics['brier']:.4f}   ECE: {test_metrics['ece']:.4f}"
           f"   (lower is better for both; ECE=0 is perfect calibration)")
-    print(f"\n  Demographics-only baseline AUC was 0.826")
+    print(f"\n  EDA logistic-regression demographics baseline was 0.826 (different pipeline/split -")
+    print(f"  for a true apples-to-apples number, compare against a --clinical_only run instead)")
     delta = test_metrics["auc"] - 0.826
     print(f"  This model's test AUC        : {test_metrics['auc']:.3f}  ({delta:+.3f})")
     if delta > 0:
