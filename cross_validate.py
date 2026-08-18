@@ -53,6 +53,8 @@ from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import roc_auc_score, classification_report
 
+from tqdm import tqdm
+
 from dataset_3d import OASIS3Dataset
 from model_3d import FusionModel
 from train import evaluate, forward_pass, expected_calibration_error, set_seed
@@ -132,7 +134,9 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
     for epoch in range(1, args.epochs + 1):
         model.train()
         running_loss, n_seen = 0.0, 0
-        for batch in train_loader:
+        loop = tqdm(train_loader, desc=f"    fold {fold_idx} ep {epoch:3d}/{args.epochs}",
+                    leave=False)
+        for batch in loop:
             vol = batch["volume"].to(device, non_blocking=True)
             clin = batch["clinical"].to(device, non_blocking=True)
             y = batch["label"].to(device, non_blocking=True)
@@ -146,6 +150,7 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
 
             running_loss += loss.item() * y.size(0)
             n_seen += y.size(0)
+            loop.set_postfix(loss=f"{running_loss/n_seen:.4f}")
 
         val_metrics, _ = evaluate(model, val_loader, device, criterion,
                                   imaging_only, clinical_only)
@@ -390,7 +395,13 @@ def main():
         with open(out_path, "w") as fh:
             json.dump({"tag": args.tag, "mode": args.mode,
                        "args": vars(args), "folds": results}, fh, indent=2)
-        print(f"    fold {i} saved ({(time.time()-t0)/60:.1f} min elapsed)")
+
+        elapsed = (time.time() - t0) / 60
+        done_now = sum(1 for r in results if r["fold"] >= i)  # folds run this session
+        remaining = len(folds) - len(results)
+        eta = (elapsed / max(done_now, 1)) * remaining
+        print(f"    fold {i} saved  ({elapsed:.1f} min elapsed, "
+              f"{remaining} fold(s) left, ~{eta:.0f} min remaining)")
 
     summary, probs, labels = summarise(results, args.tag)
 
