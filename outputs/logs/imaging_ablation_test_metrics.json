@@ -1,0 +1,28 @@
+{
+  "test": {
+    "loss": 0.5439611395744428,
+    "accuracy": 0.7397260273972602,
+    "balanced_accuracy": 0.7375565610859729,
+    "auc": 0.801659125188537,
+    "brier": 0.17720891535282135,
+    "ece": 0.08420636877417562,
+    "sensitivity": 0.7692307692307693,
+    "specificity": 0.7058823529411765
+  },
+  "best_val_auc": 0.9117647058823529,
+  "best_epoch": 22,
+  "args": {
+    "epochs": 60,
+    "batch_size": 8,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "target_size": 128,
+    "base_ch": 16,
+    "dropout": 0.3,
+    "seed": 42,
+    "patience": 15,
+    "imaging_only": true,
+    "tag": "imaging_ablation",
+    "resume": false
+  }
+}

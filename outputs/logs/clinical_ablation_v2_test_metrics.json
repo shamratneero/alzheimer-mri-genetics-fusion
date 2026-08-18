@@ -1,0 +1,29 @@
+{
+  "test": {
+    "loss": 0.5690251899092165,
+    "accuracy": 0.7123287671232876,
+    "balanced_accuracy": 0.7138009049773756,
+    "auc": 0.7805429864253394,
+    "brier": 0.1924133449792862,
+    "ece": 0.09888856909046433,
+    "sensitivity": 0.6923076923076923,
+    "specificity": 0.7352941176470589
+  },
+  "best_val_auc": 0.8735294117647059,
+  "best_epoch": 25,
+  "args": {
+    "epochs": 60,
+    "batch_size": 8,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "target_size": 128,
+    "base_ch": 16,
+    "dropout": 0.3,
+    "seed": 42,
+    "patience": 15,
+    "imaging_only": false,
+    "clinical_only": true,
+    "tag": "clinical_ablation_v2",
+    "resume": false
+  }
+}

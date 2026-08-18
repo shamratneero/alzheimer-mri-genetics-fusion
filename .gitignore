@@ -7,6 +7,16 @@ test/
 .ipynb_checkpoints/
 __pycache__/
 *.pyc
-outputs/
-preprocessed/ 
-*.nii.gz 
+preprocessed/
+*.nii.gz
+
+# Ignore everything under outputs/ by default, then re-include the small
+# result files. Note: git will not descend into an excluded *directory*, so
+# the directories are re-included first, then their contents filtered.
+outputs/*
+!outputs/cv/
+!outputs/logs/
+outputs/checkpoints*/
+# model checkpoints are ~42MB each and are not tracked
+*.pt
+*.pth
