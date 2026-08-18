@@ -280,24 +280,63 @@ hyperparameters, same procedure — only the subject split differs. Per-fold AUC
 across those same two folds was 0.897 and 0.878, i.e. essentially identical and
 uniformly excellent.
 
+### Extended clinical baseline (5 features)
+
+The two-feature clinical branch (APOE e4 count + age) invites the objection that
+the imaging model was compared against a deliberately weakened baseline — the
+EDA logistic regression on five features reached AUC 0.826. The clinical branch
+was therefore re-run with sex, education and socioeconomic status added, through
+the same pipeline and the same folds (`--extended_clinical`).
+
+| clinical branch | per-fold mean AUC | pooled OOF AUC | gap | mean ECE |
+|---|---|---|---|---|
+| 2 features (APOE, age) | 0.786 | 0.7638 | 0.022 | 0.0955 |
+| 5 features (+ sex, educ, SES) | 0.770 | **0.7675** | **0.003** | 0.126 |
+
+Per-fold AUCs for the 5-feature model: 0.717, 0.786, 0.670, 0.836, 0.841
+(mean 0.770 ± 0.075); pooled 95% CI [0.721, 0.814].
+
+Two things follow. First, the three extra demographics are worth +0.004 pooled
+AUC — statistically nothing (see the paired test below, p=0.856). **APOE e4
+count and age carry essentially all of the non-imaging signal in this cohort.**
+Second, the 5-feature model has a per-fold-to-pooled gap of **0.003**, the
+smallest of any model run here, against 0.120 for imaging and 0.199 for fusion.
+The clinical models are not merely competitive on discrimination; their
+fold-models agree on what a given probability means, and the imaging-based ones
+do not.
+
 ### Paired comparison (identical subjects, identical bootstrap resamples)
+
+| mode | pooled OOF AUC |
+|---|---|
+| clinical, 5 features | **0.7675** |
+| clinical, 2 features | 0.7638 |
+| imaging only | 0.7292 |
+| fusion | 0.6702 |
 
 | comparison | ΔAUC | 95% CI | p | verdict |
 |---|---|---|---|---|
-| clinical vs imaging | +0.035 | [−0.024, +0.093] | 0.253 | not distinguishable |
-| clinical vs fusion  | **+0.094** | [+0.033, +0.158] | **0.003** | **significant** |
-| imaging vs fusion   | **+0.059** | [+0.003, +0.118] | **0.039** | **significant** |
+| clinical 2-feat vs clinical 5-feat | −0.004 | [−0.049, +0.040] | 0.856 | not distinguishable |
+| clinical 2-feat vs imaging | +0.035 | [−0.024, +0.093] | 0.253 | not distinguishable |
+| clinical 5-feat vs imaging | +0.038 | [−0.028, +0.107] | 0.253 | not distinguishable |
+| clinical 2-feat vs fusion | **+0.094** | [+0.033, +0.158] | **0.003** | **significant** |
+| clinical 5-feat vs fusion | **+0.097** | [+0.029, +0.169] | **0.004** | **significant** |
+| imaging vs fusion | **+0.059** | [+0.003, +0.118] | **0.039** | **significant** |
 
 The test was verified to detect a genuine difference when one exists (a
 synthetic strong/weak pair returned p < 0.001), so "not distinguishable" is a
 substantive result rather than an artefact of low power.
 
-**Two APOE/age scalars significantly outperform the full multimodal model**
-(+0.094, p=0.003). **Fusion is also significantly worse than imaging alone**
-(+0.059, p=0.039) despite having strictly more information available to it.
-A fusion model that is significantly worse than both of its own components is
-not a marginal effect — it is a failure of naive concatenation-based fusion at
-this scale.
+**Clinical features significantly outperform the full multimodal model**, and
+the result does not depend on which clinical baseline is used: the 2-feature
+version beats fusion by +0.094 (p=0.003) and the stronger 5-feature version
+beats it by slightly *more*, +0.097 (p=0.004). The "you compared against a weak
+baseline" objection is therefore closed from both directions.
+
+**Fusion is also significantly worse than imaging alone** (+0.059, p=0.039)
+despite having strictly more information available to it. A fusion model that is
+significantly worse than both of its own components is not a marginal effect —
+it is a failure of naive concatenation-based fusion at this scale.
 
 ### Checkpoint selection
 
@@ -343,15 +382,21 @@ Selecting on validation AUC repeatedly chose miscalibrated models:
    clinical-vs-imaging comparison remains undecided while both clear fusion.
 
 6. **Imaging does not clear the non-imaging baseline.** Pooled imaging AUC
-   (0.729) sits below the 2-feature clinical model (0.764) and well below the
-   5-feature demographics logistic regression (0.826). A 3.57M-parameter 3D CNN
-   over 128³ volumes, at ~5 hours per fold, does not beat APOE e4 count and age.
+   (0.729) sits below both the 2-feature clinical model (0.764) and the
+   5-feature one (0.768). A 3.57M-parameter 3D CNN over 128³ volumes, at ~5
+   hours per fold, does not beat APOE e4 count and age.
+
+7. **The non-imaging signal is APOE and age, and nothing else.** Adding sex,
+   education and socioeconomic status to the clinical branch changed pooled AUC
+   by +0.004 (p=0.856). This matters for the comparison above: the imaging model
+   fails to beat the *stronger* clinical baseline as well as the weaker one, so
+   the result cannot be attributed to a deliberately handicapped comparator.
 
 ## Limitations (Phase 2)
 
 - **n = 365** caps absolute performance and widens every interval. The clinical
-  branch currently uses 2 features against the EDA baseline's 5, so the
-  non-imaging comparison is understated; a 5-feature rerun is pending.
+  branch has now been run at both 2 and 5 features, so the non-imaging baseline
+  is no longer understated, but the cohort remains small.
 - **Single architecture.** These findings are demonstrated for one custom 3D CNN
   trained from scratch. Whether they persist with pretrained backbones
   (MedicalNet) or a different input representation (2D-slice, ImageNet-pretrained)

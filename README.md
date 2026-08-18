@@ -18,7 +18,8 @@ conventionally reported reverses the conclusion**:
 
 | mode | per-fold mean AUC | pooled out-of-fold AUC | mean ECE |
 |---|---|---|---|
-| clinical only (APOE + age) | 0.786 | **0.764** | 0.0955 |
+| clinical only (APOE + age) | 0.786 | 0.7638 | 0.0955 |
+| clinical only (5 features) | 0.770 | **0.7675** | 0.126 |
 | imaging only (3D CNN) | 0.849 | 0.729 | 0.225 |
 | fusion | **0.869** | **0.670** | 0.309 |
 
@@ -32,7 +33,11 @@ ranking *within* a fold; pooled AUC additionally requires the fold-models to put
 probabilities on a *comparable scale*. The imaging-based models fail that second
 requirement, and per-fold reporting cannot see it.
 
-Two APOE/age scalars outperform a 3.57M-parameter 3D CNN over 128³ volumes.
+Two APOE/age scalars outperform a 3.57M-parameter 3D CNN over 128³ volumes —
+and so does the 5-feature clinical model, which beats fusion by a slightly wider
+margin (+0.097, p=0.004). Adding sex, education and SES to APOE and age moves
+pooled AUC by +0.004 (p=0.856), so the non-imaging signal here is APOE and age
+and essentially nothing else.
 
 See [`RESULTS.md`](RESULTS.md) for the full experimental record.
 
@@ -102,11 +107,12 @@ python train.py                 --tag fusion
 
 # 5-fold cross-validation (the primary result)
 python cross_validate.py --mode clinical_only --tag cv_clinical_only
+python cross_validate.py --mode clinical_only --tag cv_clinical_5feat --extended_clinical
 python cross_validate.py --mode imaging_only  --tag cv_imaging_only  --resume
 python cross_validate.py --mode fusion        --tag cv_fusion        --resume
 
 # paired comparison across modes
-python cross_validate.py --compare cv_clinical_only cv_imaging_only cv_fusion
+python cross_validate.py --compare cv_clinical_only cv_clinical_5feat cv_imaging_only cv_fusion
 ```
 
 All training entry points are resume-safe (`--resume`); `train.py` checkpoints
@@ -155,11 +161,9 @@ Planned:
 5. GradCAM — whether attention falls on hippocampal / medial temporal regions
    or on artefacts
 
-Known limitations: n=365 caps absolute performance; the clinical branch
-currently uses 2 features against a 5-feature demographics baseline (AUC 0.826),
-so the non-imaging comparison is understated; OASIS-3 labels derive from CDR
-whereas ADNI/AIBL use physician-assigned NINCDS-ADRDA criteria, so cross-cohort
-label equivalence is not exact.
+Known limitations: n=365 caps absolute performance; OASIS-3 labels derive from
+CDR whereas ADNI/AIBL use physician-assigned NINCDS-ADRDA criteria, so
+cross-cohort label equivalence is not exact.
 
 ---
 
