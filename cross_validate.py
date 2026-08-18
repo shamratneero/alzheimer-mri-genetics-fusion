@@ -101,13 +101,19 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
     imaging_only = args.mode == "imaging_only"
     clinical_only = args.mode == "clinical_only"
 
-    train_ds = OASIS3Dataset(train_df, PRE_DIR, target_size=args.target_size, augment=True)
-    val_ds = OASIS3Dataset(val_df, PRE_DIR, target_size=args.target_size, augment=False)
-    test_ds = OASIS3Dataset(test_df, PRE_DIR, target_size=args.target_size, augment=False)
+    train_ds = OASIS3Dataset(train_df, PRE_DIR, target_size=args.target_size,
+                             augment=True, extended_clinical=args.extended_clinical)
+    val_ds = OASIS3Dataset(val_df, PRE_DIR, target_size=args.target_size,
+                           augment=False, extended_clinical=args.extended_clinical)
+    test_ds = OASIS3Dataset(test_df, PRE_DIR, target_size=args.target_size,
+                            augment=False, extended_clinical=args.extended_clinical)
 
-    # fold-local train statistics only - no leakage from val/test
-    val_ds.set_age_norm(train_ds.age_mean, train_ds.age_std)
-    test_ds.set_age_norm(train_ds.age_mean, train_ds.age_std)
+    # fold-local train statistics only - no leakage from val/test.
+    # set_clinical_norm covers age plus education/SES when the extended
+    # clinical vector is in use.
+    norm = train_ds.get_clinical_norm()
+    val_ds.set_clinical_norm(norm)
+    test_ds.set_clinical_norm(norm)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               num_workers=0, pin_memory=True, drop_last=True)
@@ -349,6 +355,11 @@ def main():
     ap.add_argument("--target_size", type=int, default=128)
     ap.add_argument("--base_ch", type=int, default=16)
     ap.add_argument("--dropout", type=float, default=0.3)
+    ap.add_argument("--extended_clinical", action="store_true",
+                    help="use the 5-feature clinical vector (APOE, age, sex, "
+                         "education, SES) instead of 2 features, so the imaging "
+                         "model is compared against the strongest non-imaging "
+                         "baseline rather than a weakened one")
     ap.add_argument("--patience", type=int, default=15)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true",

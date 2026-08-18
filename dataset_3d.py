@@ -22,28 +22,72 @@ import torch.nn.functional as F
 
 class OASIS3Dataset(Dataset):
     def __init__(self, cohort_df, preprocessed_dir, target_size=128,
-                 use_age=True, augment=False):
+                 use_age=True, augment=False, extended_clinical=False):
         """
         cohort_df       : subset of oasis3_cohort.csv rows for this split
         preprocessed_dir: folder containing <subject>.npy files
         target_size     : cube side length fed to the model
         use_age         : include age_at_scan as a clinical feature
         augment         : apply light 3D augmentation (train split only)
+        extended_clinical : use the 5-feature clinical vector
+                            (APOE e4 count, age, sex, education, SES) instead
+                            of the 2-feature one. The 2-feature version is
+                            weaker than the demographics logistic-regression
+                            baseline (0.781 vs 0.826), so the 5-feature version
+                            is what the imaging model should be compared
+                            against to avoid understating the non-imaging
+                            baseline.
         """
         self.df = cohort_df.reset_index(drop=True)
         self.dir = preprocessed_dir
         self.target_size = target_size
         self.use_age = use_age
         self.augment = augment
+        self.extended_clinical = extended_clinical
 
         # normalise age using stats from THIS dataframe's own distribution
         # (caller should pass train-set stats for val/test - see build_splits)
         self.age_mean = self.df["age_at_scan"].astype(float).mean()
         self.age_std = self.df["age_at_scan"].astype(float).std()
 
+        # education and SES are continuous-ish integers and need scaling too;
+        # sex is binary (coded 1/2 in OASIS-3) and is mapped to 0/1 instead.
+        # Same leakage rule as age: callers pass train-split stats for val/test.
+        self.educ_mean = self.df["education"].astype(float).mean()
+        self.educ_std = self.df["education"].astype(float).std()
+        self.ses_mean = self.df["ses"].astype(float).mean()
+        self.ses_std = self.df["ses"].astype(float).std()
+
     def set_age_norm(self, mean, std):
         """Override age normalisation stats (use train-set stats for val/test)."""
         self.age_mean, self.age_std = mean, std
+
+    def set_clinical_norm(self, stats):
+        """Override all clinical normalisation stats at once (train-split stats).
+
+        stats: dict with keys age_mean, age_std, educ_mean, educ_std,
+               ses_mean, ses_std.
+        """
+        self.age_mean = stats["age_mean"]
+        self.age_std = stats["age_std"]
+        self.educ_mean = stats["educ_mean"]
+        self.educ_std = stats["educ_std"]
+        self.ses_mean = stats["ses_mean"]
+        self.ses_std = stats["ses_std"]
+
+    def get_clinical_norm(self):
+        """Return this split's normalisation stats, to hand to val/test sets."""
+        return {
+            "age_mean": self.age_mean, "age_std": self.age_std,
+            "educ_mean": self.educ_mean, "educ_std": self.educ_std,
+            "ses_mean": self.ses_mean, "ses_std": self.ses_std,
+        }
+
+    @property
+    def n_clinical_features(self):
+        if self.extended_clinical:
+            return 5
+        return 2 if self.use_age else 1
 
     def __len__(self):
         return len(self.df)
@@ -121,7 +165,16 @@ class OASIS3Dataset(Dataset):
 
         apoe_e4 = torch.tensor(float(row["apoe_e4_count"]), dtype=torch.float32)
 
-        if self.use_age:
+        if self.extended_clinical:
+            age_norm = (float(row["age_at_scan"]) - self.age_mean) / (self.age_std + 1e-6)
+            # OASIS-3 codes sex as 1/2; map to 0/1 so it enters on a comparable
+            # scale to the z-scored continuous features rather than as 1-vs-2.
+            sex = float(row["sex"]) - 1.0
+            educ_norm = (float(row["education"]) - self.educ_mean) / (self.educ_std + 1e-6)
+            ses_norm = (float(row["ses"]) - self.ses_mean) / (self.ses_std + 1e-6)
+            clinical = torch.tensor(
+                [apoe_e4, age_norm, sex, educ_norm, ses_norm], dtype=torch.float32)
+        elif self.use_age:
             age = float(row["age_at_scan"])
             age_norm = (age - self.age_mean) / (self.age_std + 1e-6)
             clinical = torch.tensor([apoe_e4, age_norm], dtype=torch.float32)
