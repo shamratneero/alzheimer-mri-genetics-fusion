@@ -20,3 +20,6 @@ outputs/checkpoints*/
 # model checkpoints are ~42MB each and are not tracked
 *.pt
 *.pth
+adni_pilot/
+adni_nifti/
+preprocessed_adni/
