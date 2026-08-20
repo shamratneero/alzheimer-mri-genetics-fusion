@@ -66,6 +66,70 @@ os.makedirs(CV_DIR, exist_ok=True)
 
 
 # --------------------------------------------------------------------------
+# checkpoint selection criteria
+# --------------------------------------------------------------------------
+# Selecting the checkpoint on validation AUC alone is standard practice and it
+# demonstrably fails here. In 4 of 10 fold-runs (imaging fold 2, fusion folds
+# 2, 4, 5) it chose an epoch whose validation balanced accuracy had ALREADY
+# collapsed to ~0.500 - i.e. the evidence that the model was degenerate was
+# present in the very data being used to select it, and the criterion ignored
+# it because it only looks at ranking. In each of those runs a better-behaved
+# epoch existed and was passed over.
+#
+# All criteria below are evaluated on VALIDATION data only, so this is model
+# selection, not test leakage. They are tracked simultaneously within a single
+# training run: same folds, same weights trajectory, same random state, so the
+# comparison between criteria is paired and differences are attributable to the
+# selection rule alone.
+#
+# GATED_BACC_MIN: a model predicting one class for every subject scores exactly
+# 0.500 balanced accuracy. 0.55 sits just above that degenerate floor, so the
+# gate rejects collapsed models without otherwise constraining the choice.
+GATED_BACC_MIN = 0.55
+ECE_PENALTY = 0.5
+
+
+def _score_auc(m):
+    return m["auc"]
+
+
+def _score_auc_minus_ece(m):
+    """Trade discrimination against miscalibration. The penalty weight is a
+    free parameter; 0.5 keeps AUC dominant while making a large ECE decisive."""
+    return m["auc"] - ECE_PENALTY * m["ece"]
+
+
+def _score_gated_bacc(m):
+    """Reject degenerate models, then choose on AUC as usual. Unlike a linear
+    penalty this introduces no arbitrary weighting - it only refuses models
+    that are already failing at the decision threshold.
+
+    Returns -inf (not a finite sentinel) for a degenerate epoch so that if NO
+    epoch ever clears the gate, no checkpoint is stored at all and the caller
+    falls back to the AUC choice. With a finite sentinel the first degenerate
+    epoch would beat the -inf initial value and be selected arbitrarily."""
+    if m["balanced_accuracy"] <= GATED_BACC_MIN:
+        return -float("inf")
+    return m["auc"]
+
+
+def _score_neg_brier(m):
+    """Brier score decomposes into calibration + refinement, so it balances the
+    two by construction rather than by a chosen weight. Negated so that, like
+    the others, higher is better."""
+    return -m["brier"]
+
+
+SELECTION_CRITERIA = {
+    "auc": _score_auc,                     # baseline: current practice
+    "auc_minus_ece": _score_auc_minus_ece,
+    "gated_bacc": _score_gated_bacc,
+    "neg_brier": _score_neg_brier,
+}
+PRIMARY_CRITERION = "auc"    # what the legacy `test`/`predictions` fields report
+
+
+# --------------------------------------------------------------------------
 # splitting
 # --------------------------------------------------------------------------
 def build_cv_folds(cohort_csv, n_folds=5, val_frac=0.125, seed=42):
@@ -134,7 +198,8 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
         optimizer, mode="max", factor=0.5, patience=5)
 
     best_auc, best_epoch, no_improve = -1.0, -1, 0
-    best_state = None
+    best = {name: {"score": -float("inf"), "epoch": -1, "state": None, "val": {}}
+            for name in SELECTION_CRITERIA}
     history = []
 
     for epoch in range(1, args.epochs + 1):
@@ -168,11 +233,27 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
             "val_auc": round(float(val_metrics["auc"]), 4),
             "val_bal_acc": round(float(val_metrics["balanced_accuracy"]), 4),
             "val_ece": round(float(val_metrics["ece"]), 4),
+            "val_brier": round(float(val_metrics["brier"]), 4),
         })
 
+        # One snapshot of the weights serves every criterion that improved this
+        # epoch, so tracking four costs one extra CPU copy rather than four.
+        snapshot = None
+        for name, score_fn in SELECTION_CRITERIA.items():
+            score = score_fn(val_metrics)
+            if score > best[name]["score"]:
+                if snapshot is None:
+                    snapshot = {k: v.detach().cpu().clone()
+                                for k, v in model.state_dict().items()}
+                best[name].update(score=score, epoch=epoch, state=snapshot,
+                                  val=dict(val_metrics))
+
+        # Early stopping still keys off AUC so the training trajectory is
+        # IDENTICAL to the runs already reported. Changing when training stops
+        # would confound the comparison: differences between criteria could then
+        # be due to a longer or shorter run rather than the selection rule.
         if val_metrics["auc"] > best_auc:
             best_auc, best_epoch, no_improve = val_metrics["auc"], epoch, 0
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         else:
             no_improve += 1
 
@@ -187,25 +268,49 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
                   f"(best {best_auc:.3f} @ {best_epoch})")
             break
 
-    model.load_state_dict(best_state)
-    test_metrics, test_raw = evaluate(model, test_loader, device, criterion,
-                                      imaging_only, clinical_only)
+    # ---- evaluate each criterion's chosen checkpoint on the test fold -------
+    by_criterion = {}
+    print(f"    fold {fold_idx} TEST by selection criterion:")
+    for name in SELECTION_CRITERIA:
+        if best[name]["state"] is None:
+            # gated_bacc can select nothing if no epoch ever cleared the gate;
+            # fall back to the AUC choice and record that it did so
+            best[name] = dict(best[PRIMARY_CRITERION])
+            best[name]["fell_back"] = True
 
-    print(f"    fold {fold_idx} TEST: auc {test_metrics['auc']:.3f}  "
-          f"bacc {test_metrics['balanced_accuracy']:.3f}  "
-          f"ece {test_metrics['ece']:.3f}  brier {test_metrics['brier']:.3f}")
+        model.load_state_dict(best[name]["state"])
+        tm, traw = evaluate(model, test_loader, device, criterion,
+                            imaging_only, clinical_only)
+        by_criterion[name] = {
+            "epoch": int(best[name]["epoch"]),
+            "fell_back": bool(best[name].get("fell_back", False)),
+            "val_at_selection": {k: float(v) for k, v in best[name]["val"].items()},
+            "test": {k: float(v) for k, v in tm.items()},
+            "predictions": {
+                "subject": list(traw["subjects"]),
+                "label": [int(x) for x in traw["labels"]],
+                "prob_ad": [float(x) for x in traw["probs"]],
+            },
+        }
+        flag = " (fell back to auc)" if by_criterion[name]["fell_back"] else ""
+        print(f"      {name:16s} ep {best[name]['epoch']:3d}  "
+              f"auc {tm['auc']:.3f}  bacc {tm['balanced_accuracy']:.3f}  "
+              f"ece {tm['ece']:.3f}  brier {tm['brier']:.3f}{flag}")
+
+    prim = by_criterion[PRIMARY_CRITERION]
+    test_metrics = prim["test"]
 
     return {
         "fold": fold_idx,
         "best_val_auc": float(best_auc),
         "best_epoch": int(best_epoch),
-        "test": {k: float(v) for k, v in test_metrics.items()},
+        # legacy fields = the AUC-selected checkpoint, so summarise() and
+        # compare() keep working unchanged and previously reported results
+        # remain reproducible from this script
+        "test": dict(prim["test"]),
+        "predictions": dict(prim["predictions"]),
         "history": history,
-        "predictions": {
-            "subject": list(test_raw["subjects"]),
-            "label": [int(x) for x in test_raw["labels"]],
-            "prob_ad": [float(x) for x in test_raw["probs"]],
-        },
+        "by_criterion": by_criterion,
     }
 
 
@@ -267,6 +372,90 @@ def summarise(results, tag):
 # --------------------------------------------------------------------------
 # comparison across modes
 # --------------------------------------------------------------------------
+def compare_criteria(tag):
+    """Compare checkpoint-selection criteria within one CV run.
+
+    Each criterion selected a checkpoint from the SAME training trajectory on
+    the SAME folds, so differences here are attributable to the selection rule
+    and nothing else. The bootstrap is paired (identical resample indices for
+    every criterion), which is far more sensitive than comparing independent
+    confidence intervals.
+    """
+    path = os.path.join(CV_DIR, f"{tag}_folds.json")
+    if not os.path.exists(path):
+        print(f"  ! {path} not found")
+        return
+    folds = json.load(open(path))["folds"]
+    if "by_criterion" not in folds[0]:
+        print(f"  ! {tag} predates multi-criterion selection - re-run to compare")
+        return
+
+    names = list(folds[0]["by_criterion"])
+    print(f"\n{'='*74}")
+    print(f"CHECKPOINT SELECTION CRITERIA  -  {tag}")
+    print(f"{'='*74}\n")
+
+    # per-fold table: the degenerate-model problem is a per-fold phenomenon
+    print("  epoch chosen per fold, and resulting test balanced accuracy:")
+    print(f"  {'criterion':16s} " + "  ".join(f"fold{f['fold']}" for f in folds))
+    print(f"  {'-'*66}")
+    for n in names:
+        eps = "  ".join(f"{f['by_criterion'][n]['epoch']:5d}" for f in folds)
+        print(f"  {n:16s} {eps}")
+    print()
+    for n in names:
+        bas = "  ".join(f"{f['by_criterion'][n]['test']['balanced_accuracy']:.3f}"
+                        for f in folds)
+        degen = sum(1 for f in folds
+                    if f['by_criterion'][n]['test']['balanced_accuracy'] < 0.55)
+        print(f"  {n:16s} {bas}   <- {degen} degenerate fold(s)")
+
+    # aggregate
+    print(f"\n  {'criterion':16s} {'perfold':>8s} {'pooled':>8s} {'gap':>7s} "
+          f"{'bacc':>7s} {'ECE':>7s} {'sens':>7s} {'spec':>7s}")
+    print(f"  {'-'*72}")
+    pooled = {}
+    for n in names:
+        pf = np.mean([f["by_criterion"][n]["test"]["auc"] for f in folds])
+        p = np.concatenate([f["by_criterion"][n]["predictions"]["prob_ad"] for f in folds])
+        l = np.concatenate([f["by_criterion"][n]["predictions"]["label"] for f in folds])
+        s = np.concatenate([f["by_criterion"][n]["predictions"]["subject"] for f in folds])
+        o = np.argsort(s)
+        pooled[n] = (p[o], l[o])
+        pa = roc_auc_score(l, p)
+        print(f"  {n:16s} {pf:8.4f} {pa:8.4f} {pf-pa:7.4f} "
+              f"{np.mean([f['by_criterion'][n]['test']['balanced_accuracy'] for f in folds]):7.4f} "
+              f"{np.mean([f['by_criterion'][n]['test']['ece'] for f in folds]):7.4f} "
+              f"{np.mean([f['by_criterion'][n]['test']['sensitivity'] for f in folds]):7.4f} "
+              f"{np.mean([f['by_criterion'][n]['test']['specificity'] for f in folds]):7.4f}")
+
+    print("\n  'gap' = per-fold mean AUC minus pooled out-of-fold AUC. A large gap")
+    print("  means the fold-models disagree about what a given probability means.")
+
+    # paired bootstrap against the AUC baseline
+    base = PRIMARY_CRITERION
+    labels = pooled[base][1]
+    rng = np.random.default_rng(0)
+    idxs = [rng.integers(0, len(labels), len(labels)) for _ in range(2000)]
+    print(f"\n  Paired bootstrap vs '{base}' (positive = criterion is better):\n")
+    for n in names:
+        if n == base:
+            continue
+        diffs = []
+        for idx in idxs:
+            if len(set(labels[idx])) < 2:
+                continue
+            diffs.append(roc_auc_score(labels[idx], pooled[n][0][idx]) -
+                         roc_auc_score(labels[idx], pooled[base][0][idx]))
+        diffs = np.array(diffs)
+        lo, hi = np.percentile(diffs, [2.5, 97.5])
+        obs = roc_auc_score(labels, pooled[n][0]) - roc_auc_score(labels, pooled[base][0])
+        p = 2 * min((diffs <= 0).mean(), (diffs >= 0).mean())
+        verdict = "SIGNIFICANT" if (lo > 0 or hi < 0) else "not distinguishable"
+        print(f"    {n:16s} pooled AUC diff {obs:+.4f}  "
+              f"95% CI [{lo:+.4f}, {hi:+.4f}]  p={p:.3f}  -> {verdict}")
+
+
 def compare(tags):
     """Paired comparison of saved CV runs, with a DeLong-style bootstrap test.
 
@@ -366,7 +555,13 @@ def main():
                     help="skip folds already saved to disk")
     ap.add_argument("--compare", nargs="+", default=None,
                     help="compare finished CV runs by tag, then exit")
+    ap.add_argument("--compare_criteria", type=str, default=None,
+                    help="compare checkpoint-selection criteria within one run")
     args = ap.parse_args()
+
+    if args.compare_criteria:
+        compare_criteria(args.compare_criteria)
+        return
 
     if args.compare:
         compare(args.compare)
