@@ -82,7 +82,8 @@ def main():
     ida["Study Date"] = pd.to_datetime(ida["Study Date"], errors="coerce")
     coh["EXAMDATE"] = pd.to_datetime(coh["EXAMDATE"], errors="coerce")
 
-    m = ida.merge(coh[["subject", "label", "label_name", "EXAMDATE", "PHASE"]],
+    m = ida.merge(coh[["subject", "label", "label_name", "EXAMDATE", "PHASE",
+                       "apoe_e4_count", "apoe", "age_at_scan", "sex", "education"]],
                   left_on="Subject ID", right_on="subject", how="inner")
     m["gap_days"] = (m["Study Date"] - m["EXAMDATE"]).dt.days.abs()
 
@@ -112,9 +113,23 @@ def main():
     for k, v in sel["Description"].value_counts().head(8).items():
         print(f"    {k:40s} {v:,}")
 
-    out = sel[["subject", "label", "label_name", "Image ID", "Study Date",
-               "EXAMDATE", "gap_days", "within_365d", "Description",
-               "Imaging Protocol", "Phase"]].sort_values("subject")
+    # Clinical columns are carried through so this file can be used directly as
+    # the cohort dataframe by dataset_3d.py, which reads apoe_e4_count,
+    # age_at_scan, sex and education per subject.
+    #
+    # NOTE ON `ses`: OASIS-3 has a socioeconomic-status column; ADNI does not
+    # collect an equivalent. PTDEMOG has PTWORK (occupation code) but it is a
+    # different construct and is populated for only ~21% of records, so
+    # substituting it would introduce a silent cross-cohort inconsistency.
+    # Consequence: the 5-feature clinical branch (--extended_clinical) cannot be
+    # run on ADNI. Cross-cohort work must use the 2-feature branch
+    # (APOE e4 count + age), which is in any case where essentially all the
+    # non-imaging signal lives (adding sex/education/SES moved pooled AUC by
+    # +0.004, p=0.856 on OASIS-3).
+    out = sel[["subject", "label", "label_name", "apoe_e4_count", "apoe",
+               "age_at_scan", "sex", "education",
+               "Image ID", "Study Date", "EXAMDATE", "gap_days", "within_365d",
+               "Description", "Imaging Protocol", "Phase"]].sort_values("subject")
     out.to_csv(OUT, index=False)
 
     # image IDs for the IDA download step
