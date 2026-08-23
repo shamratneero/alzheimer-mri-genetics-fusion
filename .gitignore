@@ -23,3 +23,5 @@ outputs/checkpoints*/
 adni_pilot/
 adni_nifti/
 preprocessed_adni/
+# CV fold checkpoints - ~840MB, regenerable, not tracked
+outputs/cv_checkpoints/

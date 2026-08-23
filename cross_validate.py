@@ -62,7 +62,9 @@ from train import evaluate, forward_pass, expected_calibration_error, set_seed
 COHORT = "oasis3_cohort.csv"
 PRE_DIR = r"D:\alhseimer\preprocessed"
 CV_DIR = "outputs/cv"
+CKPT_DIR = "outputs/cv_checkpoints"
 os.makedirs(CV_DIR, exist_ok=True)
+os.makedirs(CKPT_DIR, exist_ok=True)
 
 
 # --------------------------------------------------------------------------
@@ -281,9 +283,38 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
         model.load_state_dict(best[name]["state"])
         tm, traw = evaluate(model, test_loader, device, criterion,
                             imaging_only, clinical_only)
+
+        # Persist the weights. Cross-cohort external validation needs the
+        # trained models, not just their metrics - an earlier version of this
+        # script kept checkpoints in memory only, which meant a completed CV
+        # run left nothing behind that could be applied to a second cohort.
+        # Everything required to rebuild the model is stored alongside the
+        # weights so inference does not depend on matching CLI flags later.
+        ckpt_path = os.path.join(CKPT_DIR, f"{args.tag}_fold{fold_idx}_{name}.pt")
+        torch.save({
+            "model": best[name]["state"],
+            "tag": args.tag,
+            "mode": args.mode,
+            "fold": fold_idx,
+            "criterion": name,
+            "epoch": int(best[name]["epoch"]),
+            "fell_back": bool(best[name].get("fell_back", False)),
+            "n_clinical_features": n_clin,
+            "base_ch": args.base_ch,
+            "dropout": args.dropout,
+            "target_size": args.target_size,
+            "extended_clinical": bool(args.extended_clinical),
+            # fold-local normalisation stats - required to featurise a new
+            # cohort exactly as this fold's training data was featurised
+            "clinical_norm": train_ds.get_clinical_norm(),
+            "val_at_selection": {k: float(v) for k, v in best[name]["val"].items()},
+            "test": {k: float(v) for k, v in tm.items()},
+        }, ckpt_path)
+
         by_criterion[name] = {
             "epoch": int(best[name]["epoch"]),
             "fell_back": bool(best[name].get("fell_back", False)),
+            "checkpoint": ckpt_path,
             "val_at_selection": {k: float(v) for k, v in best[name]["val"].items()},
             "test": {k: float(v) for k, v in tm.items()},
             "predictions": {
@@ -296,6 +327,14 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
         print(f"      {name:16s} ep {best[name]['epoch']:3d}  "
               f"auc {tm['auc']:.3f}  bacc {tm['balanced_accuracy']:.3f}  "
               f"ece {tm['ece']:.3f}  brier {tm['brier']:.3f}{flag}")
+
+    # fail loudly rather than discovering missing weights days later
+    saved = [by_criterion[n]["checkpoint"] for n in SELECTION_CRITERIA]
+    missing = [p for p in saved if not os.path.exists(p)]
+    if missing:
+        raise RuntimeError(f"checkpoints not written: {missing}")
+    mb = sum(os.path.getsize(p) for p in saved) / 1e6
+    print(f"      -> {len(saved)} checkpoints saved ({mb:.0f} MB)")
 
     prim = by_criterion[PRIMARY_CRITERION]
     test_metrics = prim["test"]
@@ -590,8 +629,17 @@ def main():
 
     t0 = time.time()
     for i, (tr, va, te) in enumerate(folds, 1):
-        if any(r["fold"] == i for r in results):
-            print(f"  fold {i}: already done, skipping")
+        done = next((r for r in results if r["fold"] == i), None)
+        if done:
+            # a fold completed by an older version of this script has metrics
+            # but no saved weights; say so rather than letting it surface later
+            cks = [c.get("checkpoint") for c in done.get("by_criterion", {}).values()]
+            if not cks or any(c is None or not os.path.exists(c) for c in cks):
+                print(f"  fold {i}: already done, skipping "
+                      f"-- WARNING: no checkpoints on disk for this fold. "
+                      f"Delete {out_path} and re-run to regenerate weights.")
+            else:
+                print(f"  fold {i}: already done, skipping ({len(cks)} checkpoints present)")
             continue
         print(f"\n  --- fold {i}/{len(folds)} ---")
         set_seed(args.seed + i)          # different init per fold, reproducible
