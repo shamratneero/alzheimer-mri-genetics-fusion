@@ -602,3 +602,228 @@ Recomputed from the committed per-fold JSON (`outputs/cv/sel_*_folds.json`):
   filename, validates every checkpoint against an explicit schema, sanity-checks
   every loaded volume, and asserts identical subject sets across folds before
   pooling — it fails loudly rather than producing a number from malformed input.
+
+---
+
+## Phase 4 — Grad-CAM interpretability (null result)
+
+### Purpose
+
+Phases 2-3 establish that checkpoint selection changes model behaviour, but all
+of that evidence is scalar. This phase asked whether the difference is visible
+spatially: does the degenerate `auc`-selected checkpoint attend to different
+regions than the calibration-aware pick, and do either attend to hippocampal /
+medial temporal structures at all?
+
+The centrepiece comparison was fusion fold 4, where the two criteria diverge
+most sharply:
+
+| criterion | epoch | test AUC | balanced acc | ECE | sens / spec |
+|---|---|---|---|---|---|
+| auc | 10 | 0.8974 | 0.5000 | 0.4860 | 0.000 / 1.000 |
+| neg_brier | 17 | 0.8597 | 0.7285 | 0.1380 | 0.692 / 0.765 |
+
+The `auc` checkpoint predicts CN for **every** test subject while scoring
+AUC 0.897.
+
+### Method
+
+Grad-CAM on the imaging branch, hooking `block5` (4³ feature map at 128³ input)
+and `block4` (8³). Subjects for the individual-example figures were chosen by a
+rule fixed in code before any output was inspected — the two most confident
+correct predictions per class plus the two most confident errors, ties broken by
+subject ID — so no figure could be reached by browsing for a striking one. Group
+means over all 73 fold-4 subjects are the primary evidence; individual examples
+are illustration only.
+
+Attention was quantified rather than only eyeballed:
+
+- **brain selectivity** = (attention inside the brain mask) ÷ (brain's share of
+  the volume). **1.0 is chance**; >1 means preferential attention to tissue.
+  Reporting the raw in-brain fraction alone would be meaningless because the
+  brain occupies only ~21% of a skull-stripped volume.
+- **entropy**, normalised: 1.0 = attention spread uniformly.
+- Dead CAMs (all-zero after ReLU) are **excluded** from all averages rather than
+  counted as zero, and reported separately as a rate.
+
+Group-mean maps are per-subject min-max normalised before averaging, so they
+show **where** attention lands, not **how much** — magnitude claims come only
+from the per-subject statistics above.
+
+### Result — no interpretable localisation
+
+`block5` (the only layer with usable coverage, 0% dead CAMs, all 73 subjects):
+
+| mode | criterion | brain selectivity AD | CN | entropy AD |
+|---|---|---|---|---|
+| fusion | auc | 0.493 | 0.586 | 0.964 |
+| fusion | neg_brier | 0.781 | 0.630 | 0.959 |
+| imaging_only | auc | 0.624 | 0.508 | 0.966 |
+| imaging_only | neg_brier | 0.624 | 0.508 | 0.966 |
+
+**Every value is below 1.0** — attention falls inside brain tissue *less* often
+than chance, and entropy near 0.96 confirms it is close to uniform. Visual
+inspection agrees: peak attention sits in the empty background corners, and the
+AD and CN group means are nearly indistinguishable.
+
+`block4` is unusable: 51-65 of 73 subjects (70-89%) produced completely dead
+CAMs. The surviving 8-22 subjects show selectivity above 1.0, but that is a
+self-selected sample — the subjects that survive are exactly those with unusual
+gradients — and those numbers are **not** reported as a finding.
+
+### Interpretation
+
+The likely mechanism is architectural. `ImagingBranch3D` ends with
+`AdaptiveAvgPool3d(1)`, which averages the entire 4³ feature map to one value
+per channel before the classifier. Spatial location is discarded by
+construction, so no individual cell is under gradient pressure to matter and
+Grad-CAM has little to recover. This is the spatial counterpart of the effect
+already documented in Phase 2a, where the same pooling stage left imaging
+features ~45× weaker than clinical features.
+
+Two controls support the architectural reading rather than a
+model-specific one:
+
+1. `imaging_only` shows the same below-chance selectivity as `fusion`, so the
+   clinical branch is not diluting the gradient signal.
+2. For imaging fold 4 both criteria selected the same epoch (12), so the
+   identical rows above are expected, not a bug.
+
+**This is reported as a null result.** Grad-CAM did not yield interpretable
+localisation for this architecture, and no anatomical claim is made from it.
+Notably it is *consistent* with the performance findings — a model whose pooled
+AUC falls to 0.670 under standard selection would not be expected to have
+learned crisp anatomical features. A striking hippocampal figure alongside that
+pooled AUC would have been the more troubling outcome.
+
+Fixing this would require replacing global average pooling with a
+spatially-preserving alternative and retraining, which would invalidate every
+Phase 2 and Phase 3 result. It is not pursued. Occlusion sensitivity, which does
+not depend on spatial feature maps, remains available as a gradient-free
+alternative.
+
+### Artifacts (Phase 4)
+
+- Code: `gradcam_analysis.py`
+- Results: `figures_gradcam/gradcam_summary.json` (imaging_only),
+  `figures_gradcam_fusion/gradcam_summary.json` (fusion), 24 figures
+- Reproduce: `python gradcam_analysis.py --cohort oasis --mode fusion --fold 4`
+
+---
+
+## Phase 5 — Temperature scaling vs calibration-aware selection
+
+### The question
+
+Temperature scaling is the standard post-hoc calibration fix: fit one scalar T
+on validation data, divide all logits by it. It is cheaper and better known than
+changing checkpoint selection, so the obvious objection to this paper is *"why
+not just temperature-scale?"*
+
+### Hypothesis, stated before running
+
+Dividing every logit by the same positive scalar is a strictly monotonic
+transform, so temperature scaling **cannot change AUC at all** and cannot change
+which class is predicted. It therefore cannot rescue a checkpoint that has
+collapsed to one class — it can only make that checkpoint predict the same class
+less confidently, improving ECE and Brier while balanced accuracy stays at
+0.500.
+
+The falsifier was specified in advance: if temperature scaling closed the
+per-fold/pooled gap as well as `neg_brier` selection *and* repaired the
+degenerate folds, the contribution would narrow to "selection matters only where
+it goes degenerate".
+
+### Method
+
+T fitted by LBFGS on NLL, on each fold's **validation split only** — never on
+test. Fold splits are reconstructed by importing `build_cv_folds` from
+`cross_validate.py` rather than reimplementing it; all five reconstructed test
+splits match the subject IDs in the committed CV JSON exactly, so the 37-subject
+validation splits are equally correct. `log T` is optimised rather than T so
+temperature cannot go non-positive.
+
+### Result
+
+| mode | condition | gap | balanced acc | ECE | degenerate folds |
+|---|---|---|---|---|---|
+| clinical | auc, no scaling | 0.0222 | 0.6765 | 0.1905 | 1/5 |
+| clinical | auc + temperature | 0.0110 | 0.6765 | 0.2424 | 1/5 |
+| clinical | **neg_brier** | **-0.0053** | **0.7354** | 0.2602 | **0/5** |
+| clinical | neg_brier + temp | 0.0165 | 0.7354 | 0.3353 | 0/5 |
+| imaging | auc, no scaling | 0.1201 | 0.6719 | 0.3606 | 1/5 |
+| imaging | auc + temperature | 0.0735 | 0.6719 | 0.2720 | 1/5 |
+| imaging | **neg_brier** | **0.0227** | **0.7581** | 0.3667 | **0/5** |
+| imaging | neg_brier + temp | 0.0159 | 0.7581 | 0.3564 | 0/5 |
+| fusion | auc, no scaling | 0.1989 | 0.6231 | 0.3905 | 1/5 |
+| fusion | auc + temperature | 0.1426 | 0.6231 | 0.2219 | 1/5 |
+| fusion | **neg_brier** | **0.0408** | **0.7506** | 0.3514 | **0/5** |
+| fusion | neg_brier + temp | 0.0330 | 0.7506 | 0.3362 | 0/5 |
+
+AUC was identical before and after scaling in 29 of 30 fold-runs, as
+monotonicity requires — a useful internal check that the implementation is
+correct. The single exception is clinical fold 2 under `neg_brier`, where AUC
+moved by 0.0004 (0.7624 → 0.7628). This is a floating-point artefact rather than
+a monotonicity violation: the fitted T was 0.020, and dividing logits by 0.02
+saturates the softmax to exactly 0.0 / 1.0 in float64, creating ties that AUC
+scores at half credit. It occurs only on the one fold where temperature fitting
+had already visibly failed (validation NLL rose 0.544 → 4.070), so it is a
+symptom of the small-validation-set problem noted under limitations, not a
+separate defect.
+
+### Findings (Phase 5)
+
+1. **Temperature scaling improves calibration metrics without fixing anything.**
+   On fusion it cut mean ECE from 0.3905 to 0.2219 — a 43% improvement — while
+   balanced accuracy stayed at **0.6231, unchanged to four decimal places**, and
+   the degenerate fold count stayed at 1/5.
+
+2. **The mechanism is visible in the fitted temperatures.** On fusion fold 4
+   (sensitivity 0.000, predicts CN for all 73 subjects) the optimiser drove
+   **T = 145,474**, which flattens every probability toward 0.5. ECE fell from
+   0.4353 to 0.0342 — a 92% "improvement" — while balanced accuracy stayed
+   exactly 0.5000. Imaging fold 2 behaved identically (T = 576,062,
+   ECE 0.4387 → 0.0205, balanced accuracy 0.5000 throughout). **Temperature
+   scaling can make a model that predicts one class for every subject appear
+   well calibrated.**
+
+3. **Calibration-aware selection is 3-5× more effective on the gap and is the
+   only one of the two that repairs the failure.** On fusion, selection closes
+   the gap to 0.0408 against temperature's 0.1426, raises balanced accuracy from
+   0.6231 to 0.7506, and eliminates the degenerate fold. Temperature does none
+   of the latter two.
+
+4. **Temperature scaling is not useless — it is insufficient.** It does close
+   part of the gap (fusion 0.1989 → 0.1426, imaging 0.1201 → 0.0735) by
+   rescaling probabilities across folds. It simply cannot address a selection
+   failure, because it operates after selection has already happened.
+
+5. **The two do not meaningfully stack.** Adding temperature on top of
+   `neg_brier` moves the fusion gap only 0.0408 → 0.0330 and leaves balanced
+   accuracy untouched. Once selection is corrected there is little left for
+   post-hoc scaling to do, which indicates the two are not doing the same job.
+
+6. **The criteria genuinely disagree.** `auc` and `neg_brier` selected different
+   epochs in **13 of 15** mode-fold combinations (clinical 5/5 differ, fusion
+   5/5, imaging 3/5). The comparison is not a distinction without a difference.
+
+### Limitations (Phase 5)
+
+- **T is fitted on 37 validation subjects**, which is small enough to overfit.
+  On clinical fold 2 the fit produced T = 0.020 and validation NLL *rose* from
+  0.544 to 4.070; mean clinical ECE worsened (0.1905 → 0.2424). That same fold
+  is where the AUC float-saturation artefact above appears. Temperature scaling
+  assumes a validation set large enough to estimate one parameter stably, and at
+  this cohort size that assumption is marginal — which is itself a point against
+  temperature scaling as the remedy for a small-cohort study.
+- Only single-parameter temperature scaling is tested. Vector scaling, Platt
+  scaling and isotonic regression are not, though all share the property that
+  they act after checkpoint selection.
+- OASIS-3 only; the temperature comparison has not been repeated on ADNI.
+
+### Artifacts (Phase 5)
+
+- Code: `temperature_scaling.py`
+- Results: `outputs/temperature/temperature_results.json`,
+  `outputs/temperature/temperature_preds_{mode}_fold{k}_{criterion}.csv`
+- Reproduce: `python temperature_scaling.py`

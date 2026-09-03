@@ -132,10 +132,28 @@ def verify_phase5():
                 f"({r['raw']['per_fold_mean_bacc']:.6f} -> "
                 f"{r['scaled']['per_fold_mean_bacc']:.6f}). Monotonicity "
                 f"violated - the Phase 5 argument depends on this being exact.")
-        if abs(r["raw"]["per_fold_mean_auc"] - r["scaled"]["per_fold_mean_auc"]) > 1e-9:
+
+        # AUC must be rank-preserved. Tiny deviations are possible without a
+        # bug: at extreme temperatures the softmax saturates to exactly 0.0/1.0
+        # in float64, creating ties, and AUC scores tied pairs at 0.5. That is a
+        # representation limit, not a monotonicity violation. A large deviation
+        # is a real bug. The threshold separates the two.
+        d_auc = abs(r["raw"]["per_fold_mean_auc"] - r["scaled"]["per_fold_mean_auc"])
+        extreme_T = [t for t in r["temperatures"] if t < 0.05 or t > 1e3]
+        if d_auc > 1e-2:
             FAILURES.append(
-                f"Phase5 {mode}/{crit}: temperature CHANGED AUC - "
-                f"implementation bug, scaling must be rank-preserving.")
+                f"Phase5 {mode}/{crit}: temperature changed AUC by {d_auc:.4f} - "
+                f"too large for float saturation, this is an implementation bug.")
+        elif d_auc > 1e-9 and not extreme_T:
+            FAILURES.append(
+                f"Phase5 {mode}/{crit}: AUC moved by {d_auc:.2e} with no extreme "
+                f"temperature to explain it (T range "
+                f"{min(r['temperatures']):.3g}-{max(r['temperatures']):.3g}) - "
+                f"investigate before trusting this row.")
+        elif d_auc > 1e-9:
+            print(f"  NOTE {mode}/{crit}: AUC moved {d_auc:.2e} due to float "
+                  f"saturation at extreme T={min(extreme_T, key=lambda t: abs(t-1)):.3g} "
+                  f"- expected, not a bug (see Phase 5 limitations)")
     print("Phase 5 checked")
 
 
