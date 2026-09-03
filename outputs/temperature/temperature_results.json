@@ -1,0 +1,182 @@
+[
+  {
+    "mode": "clinical_only",
+    "criterion": "auc",
+    "temperatures": [
+      0.9506351660616935,
+      0.35620446462337674,
+      0.5758636981751377,
+      0.662304648670497,
+      0.694131500883031
+    ],
+    "mean_temperature": 0.6478278956827472,
+    "raw": {
+      "per_fold_mean_auc": 0.7860199140384899,
+      "pooled_auc": 0.7638119050488011,
+      "gap": 0.022208008989688777,
+      "per_fold_mean_bacc": 0.6764868052484151,
+      "per_fold_mean_ece": 0.19054671192289868,
+      "per_fold_mean_brier": 0.20384853505436076,
+      "n_degenerate_folds": 1
+    },
+    "scaled": {
+      "per_fold_mean_auc": 0.7860199140384899,
+      "pooled_auc": 0.775048198578142,
+      "gap": 0.01097171546034792,
+      "per_fold_mean_bacc": 0.6764868052484151,
+      "per_fold_mean_ece": 0.2424461161507287,
+      "per_fold_mean_brier": 0.1956533973244298,
+      "n_degenerate_folds": 1
+    }
+  },
+  {
+    "mode": "clinical_only",
+    "criterion": "neg_brier",
+    "temperatures": [
+      0.9765486154223264,
+      0.020115590461291827,
+      0.33573447124976746,
+      0.7736241362188034,
+      0.7271259322813185
+    ],
+    "mean_temperature": 0.5666297491267016,
+    "raw": {
+      "per_fold_mean_auc": 0.792957166672337,
+      "pooled_auc": 0.7982738884202916,
+      "gap": -0.005316721747954611,
+      "per_fold_mean_bacc": 0.7354155751369373,
+      "per_fold_mean_ece": 0.26021189423345337,
+      "per_fold_mean_brier": 0.18947330155700215,
+      "n_degenerate_folds": 0
+    },
+    "scaled": {
+      "per_fold_mean_auc": 0.7930323546422617,
+      "pooled_auc": 0.7765393420894084,
+      "gap": 0.016493012552853292,
+      "per_fold_mean_bacc": 0.7354155751369373,
+      "per_fold_mean_ece": 0.33528504027996575,
+      "per_fold_mean_brier": 0.19716449333540056,
+      "n_degenerate_folds": 0
+    }
+  },
+  {
+    "mode": "imaging_only",
+    "criterion": "auc",
+    "temperatures": [
+      0.7143349741523748,
+      576061.557899475,
+      0.8833049554049568,
+      1.0200161636262974,
+      1.8547829453411813
+    ],
+    "mean_temperature": 115213.2060677027,
+    "raw": {
+      "per_fold_mean_auc": 0.8492246453237164,
+      "pooled_auc": 0.7291541149536089,
+      "gap": 0.12007053037010751,
+      "per_fold_mean_bacc": 0.6718588326018666,
+      "per_fold_mean_ece": 0.3605691472715101,
+      "per_fold_mean_brier": 0.24460117739314785,
+      "n_degenerate_folds": 1
+    },
+    "scaled": {
+      "per_fold_mean_auc": 0.8492246453237164,
+      "pooled_auc": 0.775725991083263,
+      "gap": 0.07349865424045343,
+      "per_fold_mean_bacc": 0.6718588326018666,
+      "per_fold_mean_ece": 0.2719930696260243,
+      "per_fold_mean_brier": 0.1995494609688764,
+      "n_degenerate_folds": 1
+    }
+  },
+  {
+    "mode": "imaging_only",
+    "criterion": "neg_brier",
+    "temperatures": [
+      1.235029393563004,
+      0.5153987383251498,
+      0.8903719695871494,
+      1.0200161636262974,
+      1.8547829453411813
+    ],
+    "mean_temperature": 1.1031198420885562,
+    "raw": {
+      "per_fold_mean_auc": 0.8618938749588902,
+      "pooled_auc": 0.8391974936739366,
+      "gap": 0.02269638128495366,
+      "per_fold_mean_bacc": 0.75806711348507,
+      "per_fold_mean_ece": 0.366725396106763,
+      "per_fold_mean_brier": 0.17113713508395276,
+      "n_degenerate_folds": 0
+    },
+    "scaled": {
+      "per_fold_mean_auc": 0.8618938749588902,
+      "pooled_auc": 0.8460356669478251,
+      "gap": 0.01585820801106519,
+      "per_fold_mean_bacc": 0.75806711348507,
+      "per_fold_mean_ece": 0.3563891476312215,
+      "per_fold_mean_brier": 0.16619998852597562,
+      "n_degenerate_folds": 0
+    }
+  },
+  {
+    "mode": "fusion",
+    "criterion": "auc",
+    "temperatures": [
+      1.7639008428721092,
+      9.0929159798945,
+      0.3161345404159717,
+      145474.6628218381,
+      6.275298751369702
+    ],
+    "mean_temperature": 29098.422214390528,
+    "raw": {
+      "per_fold_mean_auc": 0.8690942287846312,
+      "pooled_auc": 0.6702012290637427,
+      "gap": 0.19889299972088847,
+      "per_fold_mean_bacc": 0.6230696651130088,
+      "per_fold_mean_ece": 0.3905397039603423,
+      "per_fold_mean_brier": 0.3057864202094568,
+      "n_degenerate_folds": 1
+    },
+    "scaled": {
+      "per_fold_mean_auc": 0.8690942287846312,
+      "pooled_auc": 0.7265333172671407,
+      "gap": 0.1425609115174905,
+      "per_fold_mean_bacc": 0.6230696651130088,
+      "per_fold_mean_ece": 0.22186932002881798,
+      "per_fold_mean_brier": 0.22133432667496633,
+      "n_degenerate_folds": 1
+    }
+  },
+  {
+    "mode": "fusion",
+    "criterion": "neg_brier",
+    "temperatures": [
+      1.6821426384391465,
+      0.997555336815464,
+      1.1132101325472963,
+      1.028380098478805,
+      1.9726536734019342
+    ],
+    "mean_temperature": 1.3587883759365291,
+    "raw": {
+      "per_fold_mean_auc": 0.8602338425248643,
+      "pooled_auc": 0.819466200747078,
+      "gap": 0.040767641777786356,
+      "per_fold_mean_bacc": 0.7506030914390048,
+      "per_fold_mean_ece": 0.3514349013355497,
+      "per_fold_mean_brier": 0.1815958063919314,
+      "n_degenerate_folds": 0
+    },
+    "scaled": {
+      "per_fold_mean_auc": 0.8602338425248643,
+      "pooled_auc": 0.8272683455838052,
+      "gap": 0.0329654969410591,
+      "per_fold_mean_bacc": 0.7506030914390048,
+      "per_fold_mean_ece": 0.33617160508542965,
+      "per_fold_mean_brier": 0.1766196537281691,
+      "n_degenerate_folds": 0
+    }
+  }
+]
