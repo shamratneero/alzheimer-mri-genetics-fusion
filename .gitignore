@@ -27,3 +27,4 @@ adni_nifti/
 preprocessed_adni/
 # CV fold checkpoints - ~840MB, regenerable, not tracked
 outputs/cv_checkpoints/
+!figures_gradcam/*.png
