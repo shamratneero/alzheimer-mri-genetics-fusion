@@ -391,7 +391,6 @@ Selecting on validation AUC repeatedly chose miscalibrated models:
    by +0.004 (p=0.856). This matters for the comparison above: the imaging model
    fails to beat the *stronger* clinical baseline as well as the weaker one, so
    the result cannot be attributed to a deliberately handicapped comparator.
-
 ## Limitations (Phase 2)
 
 - **n = 365** caps absolute performance and widens every interval. The clinical
@@ -415,3 +414,191 @@ Selecting on validation AUC repeatedly chose miscalibrated models:
 - Single-split logs: `outputs/logs/`
 - Reproduce the comparison:
   `python cross_validate.py --compare cv_clinical_only cv_imaging_only cv_fusion`
+
+---
+
+## Phase 3 — ADNI external validation (OASIS-3 → ADNI)
+
+### Purpose
+
+Everything in Phase 2 is internal to OASIS-3 (n=365). The central claim — that
+per-fold AUC reporting conceals cross-model probability incoherence, and that
+calibration-aware checkpoint selection largely repairs it — could not be
+distinguished from a small-cohort artefact without an independent cohort. This
+phase applies the frozen OASIS-3 fold-models to ADNI (n=1,287) and asks whether
+both the failure and the remedy reproduce.
+
+### Cohort
+
+- **1,287 ADNI subjects** (433 AD / 854 CN) with usable T1 and complete
+  APOE + age, out of 1,294 strict-target subjects (scan within 365 days of
+  diagnosis). Coverage 99.5%.
+- **7 subjects excluded**: sites 057, 098 and 126 returned **PET series rather
+  than T1 structural scans** (64×64×64×2 volumes at ~4.7×4.7×5.7 mm, versus
+  ~240×256×176 at ~1 mm for a valid T1). These were caught by a
+  dimensionality/voxel-size audit run over the entire converted cohort *before*
+  preprocessing. They had initially failed an ID-matching check for an unrelated
+  reason (protocol-name suffixes in the dcm2niix output filenames), and the
+  obvious remedy — correcting the filenames — would have admitted seven PET
+  volumes into the external validation set, where they would have been resampled
+  to 160³ and become indistinguishable from valid scans in the `.npy` cache.
+- **1 subject recovered**: `037_S_4001` converted to `037_V_4001` because of a
+  data-entry variant in the DICOM `PatientID` field. The IDA directory name was
+  treated as authoritative over the free-text DICOM field.
+- APOE ε4 carrier rate 65% AD / 32% CN, against OASIS-3's 62% / 30% — consistent
+  enough to confirm correct label linkage.
+- **2-feature clinical branch only.** ADNI has no SES equivalent (PTWORK covers
+  ~21% of records and is a different construct), so the 5-feature branch cannot
+  be run cross-cohort. Given that the 5-feature branch changed pooled AUC by
+  +0.004 (p=0.856) on OASIS-3, little is lost.
+
+### Design decisions
+
+Three decisions were fixed before any inference was run.
+
+1. **Each of the five fold-models is applied to ADNI separately** — not
+   ensembled, not replaced by a single model retrained on all 365 subjects.
+   Ensembling averages away precisely the between-fold variance this paper
+   measures, and could produce a well-behaved aggregate from individually
+   degenerate members. Retraining on all 365 would require a fresh ad-hoc
+   validation split for checkpoint selection, inconsistent with the rest of the
+   protocol, and would confound training-set size with cohort.
+2. **Normalization is frozen.** Age is standardised using each fold's stored
+   OASIS-3 *training-split* `age_mean`/`age_std`; statistics are never
+   recomputed on ADNI. The normalization parameters are learned preprocessing
+   parameters of the trained model: re-estimating them on the external cohort
+   would constitute test-time distribution adaptation and would silently change
+   the model's input representation while leaving its weights fixed. It would
+   also centre ADNI's age distribution at zero by construction, erasing the very
+   cohort shift external validation exists to expose. APOE ε4 count is passed
+   raw (0/1/2), matching training exactly — it was never standardised.
+3. **Both `auc`- and `neg_brier`-selected checkpoints are run**, so the
+   cross-cohort question is asked of standard practice and of the proposed
+   remedy under identical conditions.
+
+### Age-shift diagnostic (run before inference, not used to correct anything)
+
+| Cohort | Group | N | Mean age | SD age |
+|---|---|---|---|---|
+| OASIS-3 | All | 365 | 73.41 | 8.96 |
+| OASIS-3 | CN | 172 | 69.64 | 8.63 |
+| OASIS-3 | AD | 193 | 76.77 | 7.87 |
+| ADNI | All | 1287 | 72.10 | 7.74 |
+| ADNI | CN | 854 | 70.46 | 7.07 |
+| ADNI | AD | 433 | 75.33 | 8.00 |
+
+ADNI expressed in each fold's frozen OASIS-3 normalization:
+
+| Fold | train age_mean | train age_std | z(ADNI all) | z(ADNI CN) | z(ADNI AD) |
+|---|---|---|---|---|---|
+| 1 | 73.64 | 8.62 | -0.179 | -0.369 | 0.197 |
+| 2 | 73.52 | 9.36 | -0.152 | -0.327 | 0.194 |
+| 3 | 73.27 | 9.03 | -0.130 | -0.312 | 0.228 |
+| 4 | 73.57 | 9.13 | -0.161 | -0.341 | 0.193 |
+| 5 | 73.24 | 9.10 | -0.125 | -0.306 | 0.230 |
+
+ADNI is ~1.1–1.5 years younger overall (mean z ≈ -0.15, roughly one sixth of a
+fold SD), consistently across all five folds. The subgroup structure is the more
+informative part: ADNI CN sits well below the OASIS-3 training mean
+(z ≈ -0.31 to -0.37) while ADNI AD sits slightly above it (z ≈ +0.19 to +0.23).
+Age could therefore **contribute to apparent AD/CN separability in ADNI through
+the age component of the clinical model**, rather than explaining a performance
+drop. The shift is reported, not corrected.
+
+### Primary result — per-fold mean vs cross-fold pooled-style AUC on ADNI
+
+| mode | selection | per-fold mean AUC | pooled-style AUC | gap |
+|---|---|---|---|---|
+| clinical | auc | 0.7795 | 0.7407 | 0.0388 |
+| clinical | neg_brier | 0.7877 | **0.7759** | **0.0118** |
+| imaging | auc | 0.7699 | 0.6661 | 0.1039 |
+| imaging | neg_brier | 0.7711 | **0.7535** | **0.0176** |
+| fusion | auc | 0.8062 | 0.6330 | **0.1732** |
+| fusion | neg_brier | 0.8221 | **0.8014** | **0.0208** |
+
+**Terminology.** "Cross-fold pooled-style AUC" is *not* a pooled AUC over
+independent observations. On OASIS-3 each subject receives exactly one
+out-of-fold prediction, so pooling is clean. On ADNI every subject is external
+to all five fold-models and therefore contributes five correlated rows. The
+quantity measures the same property pooled OOF AUC measured internally — whether
+the five fold-models place probabilities on a comparable scale — but it must be
+reported under this name, not as a conventional pooled AUC.
+
+### Side-by-side with OASIS-3
+
+Recomputed from the committed per-fold JSON (`outputs/cv/sel_*_folds.json`):
+
+| mode | selection | OASIS-3 gap | ADNI gap |
+|---|---|---|---|
+| clinical | auc | 0.0222 | 0.0388 |
+| clinical | neg_brier | -0.0053 | 0.0118 |
+| imaging | auc | 0.1200 | 0.1039 |
+| imaging | neg_brier | 0.0227 | 0.0176 |
+| fusion | auc | 0.1989 | 0.1732 |
+| fusion | neg_brier | 0.0408 | 0.0208 |
+
+### Findings (Phase 3)
+
+1. **The failure reproduces on an independent cohort.** Under standard
+   AUC-based checkpoint selection, the per-fold-to-pooled gap on ADNI is 0.0388
+   (clinical), 0.1039 (imaging), 0.1732 (fusion) — the same ordering and
+   substantially the same magnitude as OASIS-3 (0.0222 / 0.1200 / 0.1989),
+   on a cohort 3.5× larger, from different sites and scanners. The instability
+   is not a small-cohort artefact.
+
+2. **The gap scales with reliance on the imaging branch, again.** clinical <
+   imaging < fusion holds on both cohorts, consistent with the imaging branch
+   being the source of the unstable probability scale.
+
+3. **The remedy transfers, and transfers well.** Calibration-aware
+   (`neg_brier`) checkpoint selection reduces the ADNI gap by 70% (clinical),
+   83% (imaging) and **88% (fusion)**. On OASIS-3 the equivalent fusion
+   reduction was 79%. The remedy was designed on OASIS-3 and applied unchanged;
+   it works at least as well on a cohort it was never tuned against.
+
+4. **Fusion becomes the best mode once selection is fixed.** Under `neg_brier`,
+   ADNI pooled-style AUC is fusion 0.8014 > clinical 0.7759 > imaging 0.7535.
+   Under `auc` selection the same models rank clinical 0.7407 > imaging 0.6661 >
+   fusion 0.6330. The apparent inferiority of multimodal fusion is an artefact
+   of checkpoint selection, not a property of fusion — and this now holds on two
+   independent cohorts.
+
+5. **Absolute external performance is credible rather than inflated.** Best
+   external pooled-style AUC is 0.8014 (fusion, `neg_brier`), against 0.8195
+   internally. A drop of that size moving to an unseen cohort, with frozen
+   preprocessing and no adaptation, is what honest external validation looks
+   like.
+
+### Limitations (Phase 3)
+
+- **Cross-fold pooled-style AUC is not an independent-observation statistic**
+  (see terminology note). It is a coherence diagnostic, not a deployment metric.
+- **Label definitions differ between cohorts.** OASIS-3 labels derive from CDR;
+  ADNI uses physician-assigned criteria via DXSUM (`DXAD` for ADNI1, `DXDDUE`
+  for ADNI2/GO/3/4). There is no strict equivalence.
+- **Class balance differs** — ADNI is CN-heavy (1:1.97) against OASIS-3's near
+  balance (1:0.89), which affects any threshold-dependent metric.
+- **Scan-availability selection bias.** The ADNI cohort was 879 AD / 949 CN
+  before the usable-scan requirement and 433 AD / 854 CN after: AD subjects are
+  substantially more likely to lack a usable T1 (motion, dropout).
+- **Brain fraction runs counter to atrophy.** ADNI AD mean brain fraction
+  (0.1177) slightly exceeds CN (0.1130). Brain fraction here is brain voxels as
+  a proportion of the resampled volume and is therefore FOV-dependent; site 168
+  uses a notably wider FOV and is CN-heavy, and the four highest-brain-fraction
+  subjects are all AD with visibly enlarged ventricles. This is site composition,
+  not biology, and the quantity is a QC metric never seen by the model.
+- **Single architecture still.** Phase 3 establishes cross-cohort reproducibility
+  for one custom 3D CNN. Whether the effect persists across architectures remains
+  open.
+
+### Artifacts (Phase 3)
+
+- Code: `inference_adni.py`, `preprocess_adni.py`, `build_adni_cohort.py`,
+  `select_adni_scans.py`, `check_adni_coverage.py`
+- Results: `outputs/adni_external/adni_external_results.json`,
+  `outputs/adni_external/adni_preds_{mode}_fold{k}_{criterion}.csv`
+- Reproduce: `python inference_adni.py`
+- The inference script discovers checkpoints by embedded metadata rather than
+  filename, validates every checkpoint against an explicit schema, sanity-checks
+  every loaded volume, and asserts identical subject sets across folds before
+  pooling — it fails loudly rather than producing a number from malformed input.

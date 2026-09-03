@@ -16,6 +16,8 @@ preprocessed/
 outputs/*
 !outputs/cv/
 !outputs/logs/
+!outputs/adni_external/
+
 outputs/checkpoints*/
 # model checkpoints are ~42MB each and are not tracked
 *.pt
