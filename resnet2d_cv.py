@@ -85,7 +85,7 @@ from train import expected_calibration_error
 COHORT = "oasis3_cohort.csv"
 PRE_DIR = r"D:\alhseimer\preprocessed"
 OUT_DIR = "outputs/resnet2d"
-CKPT_DIR = "outputs/resnet2d_checkpoints"
+CKPT_DIR = "outputs/resnet2d_checkpoints"   # default; overridden per run via --ckpt_dir
 
 # --- LOCKED CONSTANTS: deliberately not CLI arguments ----------------------
 SLICE_FRACTION = 0.55      # axial position through the cropped, RAS-oriented volume
@@ -291,7 +291,8 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
                   f"(best val AUC {best_auc:.3f} @ ep {best_epoch})")
             break
 
-    os.makedirs(CKPT_DIR, exist_ok=True)
+    if not args.no_checkpoints:
+        os.makedirs(args.ckpt_dir, exist_ok=True)
     by_criterion = {}
     print(f"    fold {fold_idx} TEST by criterion:")
     for name in SELECTION_CRITERIA:
@@ -303,22 +304,26 @@ def run_fold(fold_idx, train_df, val_df, test_df, args, device):
         model.load_state_dict(best[name]["state"])
         tm, traw = evaluate(model, test_loader, device, criterion)
 
-        ckpt_path = os.path.join(CKPT_DIR, f"resnet2d_fold{fold_idx}_{name}.pt")
-        torch.save({
-            "model": best[name]["state"],
-            "arch": "resnet18_2p5d",
-            "pretrained": not args.no_pretrained,
-            "fold": fold_idx,
-            "criterion": name,
-            "epoch": best[name]["epoch"],
-            "fell_back": fell_back,
-            "slice_fraction": SLICE_FRACTION,
-            "slice_idxs": train_ds.slice_idxs,
-            "target_size": TARGET_SIZE,
-            "dropout": args.dropout,
-            "val_at_selection": best[name]["val"],
-            "test": tm,
-        }, ckpt_path)
+        if args.no_checkpoints:
+            ckpt_path = None
+        else:
+            ckpt_path = os.path.join(args.ckpt_dir,
+                                     f"resnet2d_fold{fold_idx}_{name}.pt")
+            torch.save({
+                "model": best[name]["state"],
+                "arch": "resnet18_2p5d",
+                "pretrained": not args.no_pretrained,
+                "fold": fold_idx,
+                "criterion": name,
+                "epoch": best[name]["epoch"],
+                "fell_back": fell_back,
+                "slice_fraction": SLICE_FRACTION,
+                "slice_idxs": train_ds.slice_idxs,
+                "target_size": TARGET_SIZE,
+                "dropout": args.dropout,
+                "val_at_selection": best[name]["val"],
+                "test": tm,
+            }, ckpt_path)
 
         by_criterion[name] = {
             "epoch": best[name]["epoch"],
@@ -362,8 +367,18 @@ def main():
     ap.add_argument("--no_pretrained", action="store_true",
                     help="ablation: random init instead of ImageNet weights")
     ap.add_argument("--out_dir", default=OUT_DIR)
+    ap.add_argument("--ckpt_dir", default=None,
+                    help="where to write checkpoints. Defaults to "
+                         "<out_dir>_checkpoints so repeated runs with "
+                         "different --out_dir never overwrite each other.")
+    ap.add_argument("--no_checkpoints", action="store_true",
+                    help="skip writing .pt files entirely (~900MB per run). "
+                         "Use for seed-repeat runs where only the summary "
+                         "JSON is needed.")
     # NOTE: SLICE_FRACTION and FOLD_SEED are deliberately NOT exposed here.
     args = ap.parse_args()
+    if args.ckpt_dir is None:
+        args.ckpt_dir = args.out_dir.rstrip("/\\") + "_checkpoints"
 
     torch.manual_seed(args.train_seed)
     np.random.seed(args.train_seed)
@@ -445,6 +460,8 @@ def main():
         "slice_fraction": SLICE_FRACTION,
         "slice_offsets": list(SLICE_OFFSETS),
         "fold_seed": FOLD_SEED,
+        "train_seed": args.train_seed,
+        "ckpt_dir": None if args.no_checkpoints else args.ckpt_dir,
         "n_folds": N_FOLDS,
         "val_frac": VAL_FRAC,
         "folds_verified_against": "outputs/cv/sel_fusion_folds.json",

@@ -900,157 +900,139 @@ stated more strongly than that.
 
 ---
 
-## Phase 7 — Architecture generalisation and the pretraining ablation
+## Phase 7 — Architecture generalisation (and a corrected first conclusion)
 
 ### The objection this answers
 
 Phases 2–6 rest on one custom 3D CNN. A reviewer will ask whether the
-checkpoint-selection instability is a quirk of that architecture rather than a
-property worth reporting.
+checkpoint-selection instability is a quirk of that architecture.
 
 ### Design (locked before running)
 
-A standard ImageNet-pretrained ResNet-18, imaging only, run through the
-**identical** 5-fold protocol: same subject splits, same class-weighted
-CrossEntropy, AdamW, ReduceLROnPlateau, early stopping on validation AUC, and
-the same four selection criteria evaluated simultaneously.
+A standard ResNet-18, imaging only, run through the **identical** 5-fold
+protocol: same subject splits, same class-weighted CrossEntropy, AdamW,
+ReduceLROnPlateau, early stopping on validation AUC, same four selection
+criteria evaluated simultaneously.
 
-- **2.5D input.** Three adjacent axial slices become the three input channels,
-  using the pretrained 3-channel stem unmodified. This avoids inventing a
-  slice-aggregation rule, which would itself be a design choice that could
-  affect calibration and confound the comparison.
+- **2.5D input.** Three adjacent axial slices as the three input channels,
+  using the pretrained 3-channel stem unmodified. Avoids inventing a
+  slice-aggregation rule that could itself affect calibration.
 - **Fixed-fraction slice selection, `SLICE_FRACTION = 0.55` → slices 69/70/71.**
-  Not maximum brain area: that rule is data-dependent and label-correlated,
-  since AD subjects have enlarged ventricles, so it could systematically select
+  Not maximum brain area: that rule is data-dependent and label-correlated
+  (AD subjects have enlarged ventricles), so it could systematically select
   different anatomy for AD than for CN — a selection artefact hidden inside the
   slice rule. `process_one` reorients to canonical RAS and crops to the brain
   bounding box before resizing, so a fixed index is the same anatomical level in
   every subject.
-- **Same per-subject z-scoring as the primary model**, with ImageNet mean/std
-  *not* applied afterwards. This is not a claim that ImageNet normalisation is
-  wrong; applying it would mean the ResNet saw different inputs than the 3D CNN,
-  confounding architecture with preprocessing.
-- **Fine-tune all layers**, matching common practice.
-- `SLICE_FRACTION` and `FOLD_SEED` are module constants, deliberately not CLI
-  arguments, so neither can be adjusted after seeing results. The script also
-  verifies at runtime that the reconstructed test splits match the subject IDs
-  in `outputs/cv/sel_fusion_folds.json` and aborts otherwise — locking the seed
-  is necessary but not sufficient, since a change upstream could alter the
-  splits while the seed still reads 42.
-- No architecture-specific hyperparameter tuning. A poor ResNet score is a
-  result, not a problem to optimise away.
+- **Same per-subject z-scoring as the primary model**; ImageNet mean/std not
+  applied afterwards, so architecture is the only thing that varies.
+- **Fine-tune all layers.** No architecture-specific hyperparameter tuning.
+- `SLICE_FRACTION` and `FOLD_SEED` are module constants, not CLI arguments. The
+  script also verifies at runtime that the reconstructed test splits match the
+  subject IDs in `outputs/cv/sel_fusion_folds.json` and aborts otherwise.
 
-### Result 1 — the gap does NOT reproduce under ImageNet pretraining
+### Result — the gap does not reproduce on ResNet-18
 
-| criterion | per-fold mean AUC | pooled OOF AUC | gap | mean bacc | degenerate |
+Five runs: one ImageNet-pretrained, four from random initialisation differing
+only in `--train_seed`. Gap = per-fold mean AUC − pooled out-of-fold AUC.
+
+| run | auc gap | auc_minus_ece | gated_bacc | neg_brier | degenerate (auc) |
 |---|---|---|---|---|---|
-| auc | 0.7864 | 0.7811 | **0.0054** | 0.7147 | 0/5 |
-| auc_minus_ece | 0.7727 | 0.7715 | 0.0012 | 0.6931 | 0/5 |
-| gated_bacc | 0.7864 | 0.7811 | 0.0054 | 0.7147 | 0/5 |
-| neg_brier | 0.7733 | 0.7656 | 0.0077 | 0.6873 | 0/5 |
+| ImageNet-pretrained | 0.0054 | 0.0012 | 0.0054 | 0.0077 | 0/5 |
+| random init, seed 0 | **0.0804** | 0.0100 | 0.0364 | 0.0138 | 2/5 |
+| random init, seed 1 | 0.0274 | 0.0343 | 0.0274 | 0.0052 | 0/5 |
+| random init, seed 2 | 0.0146 | 0.0123 | 0.0146 | 0.0192 | 0/5 |
+| random init, seed 3 | 0.0150 | 0.0150 | 0.0026 | 0.0086 | 1/5 |
+| **3D CNN (reference)** | **0.1200** | 0.0475 | 0.0443 | 0.0227 | 1/5 |
 
-Against the 3D CNN imaging-only baseline (gap 0.1200 under `auc`), the
-pretrained ResNet shows essentially none — 0.0054, a 22× difference — and zero
-degenerate folds under every criterion. Taken alone this would suggest the
-phenomenon is architecture-specific.
+Random-init `auc` gap across four seeds: mean 0.0344, **SD 0.0313, range
+0.0146–0.0804**. Excluding seed 0 the remaining three cluster at 0.0146–0.0274.
 
-### Result 2 — the ablation: it is pretraining, not architecture
+**The 3D CNN's gap (0.1200) is 1.5× larger than the largest ResNet run and
+roughly 6× the typical one.** No ResNet configuration, in either
+initialisation, comes close to reproducing it.
 
-The pretrained ResNet differs from the 3D CNN in **two** ways at once:
-architecture *and* initialisation. Re-running the identical ResNet with random
-initialisation isolates the second:
+### A correction, recorded deliberately
 
-| condition | auc gap | neg_brier gap | degenerate (auc) | mean bacc (auc) |
-|---|---|---|---|---|
-| ResNet-18, ImageNet-pretrained | 0.0054 | 0.0077 | 0/5 | 0.7147 |
-| ResNet-18, **random init** | **0.0804** | **0.0138** | **2/5** | 0.6308 |
-| 3D CNN (scratch), for reference | 0.1200 | 0.0227 | 1/5 | 0.6719 |
+The first random-init run (seed 0) produced a gap of 0.0804 against the
+pretrained run's 0.0054. On that single pair the conclusion drawn was that
+**initialisation** was the causal variable — that the instability is a property
+of training from scratch rather than of architecture, and that ImageNet
+pretraining largely removes it. That conclusion was written up and then
+withdrawn.
 
-Random initialisation reproduces the phenomenon on the same architecture, same
-slices, same folds. The remedy behaves the same way it does on the 3D CNN:
-calibration-aware selection cuts the gap by **83%** (0.0804 → 0.0138), against
-81% for the 3D CNN (0.1200 → 0.0227).
+Three further seeds gave 0.0274, 0.0146 and 0.0150. Seed 0 is a 5× outlier; the
+remaining runs sit close to the pretrained value. **The pretraining effect does
+not survive repetition and is not claimed.**
 
-Full random-init results:
+This is worth recording rather than quietly deleting, because it is the same
+failure this paper documents: a single run produced a confident-looking number,
+a plausible mechanism was available to explain it, and the effect vanished under
+repetition. The paper's own protocol — repeat and report the spread — is what
+caught it. Nothing else in the analysis had flagged a problem.
 
-| criterion | per-fold mean AUC | pooled OOF AUC | gap | mean bacc | degenerate | selected epochs |
-|---|---|---|---|---|---|---|
-| auc | 0.8017 | 0.7213 | 0.0804 | 0.6308 | 2/5 | [4, 3, 13, 2, 2] |
-| auc_minus_ece | 0.8020 | 0.7921 | **0.0100** | 0.7046 | **0/5** | [4, 3, 18, 16, 17] |
-| gated_bacc | 0.7963 | 0.7599 | 0.0364 | 0.6713 | 1/5 | [4, 3, 13, 2, 5] |
-| neg_brier | 0.7949 | 0.7812 | 0.0138 | 0.7008 | 1/5 | [4, 5, 12, 3, 1] |
+### The remedy's direction is also unstable at this scale
 
-### Centrepiece example — random-init fold 5
-
-| criterion | epoch | test AUC | balanced acc | ECE | Brier |
-|---|---|---|---|---|---|
-| auc | 2 | **0.8069** | **0.5000** | 0.4325 | 0.4038 |
-| auc_minus_ece | 17 | 0.8009 | 0.7063 | 0.2529 | 0.2376 |
-
-The `auc` criterion selected a checkpoint with test AUC 0.807 that predicts one
-class for every subject, on a fold whose validation AUC never exceeded 0.659.
-A calibration-aware criterion, given the same training run and the same
-epochs to choose from, selected a working model at a cost of 0.006 AUC. This is
-the same failure mode as fusion fold 4 on the 3D CNN, on a completely different
-architecture.
+Calibration-aware selection reduced the gap relative to `auc` in three of four
+random-init seeds but **increased** it in seed 2 (0.0146 → 0.0192). At gaps of
+1–3 AUC points that is noise, not signal. The remedy's benefit is only clearly
+measurable where the gap is large to begin with, as in the 3D CNN
+(0.1200 → 0.0227, an 81% reduction, consistent across all three modes and
+reproduced on ADNI in Phase 3).
 
 ### Findings (Phase 7)
 
-1. **The instability is not architecture-specific — it is training-regime
-   specific.** It appears in two architectures that share almost nothing (a
-   3.57M-parameter custom 3D CNN over volumes, and an 11.2M-parameter 2D
-   ResNet-18 over slices) when both are trained from scratch on 255 subjects.
+1. **The instability is architecture-dependent.** It is large and reproducible
+   in the custom 3D CNN (gap 0.1200 on OASIS-3, 0.1039 on ADNI) and does not
+   reliably appear in ResNet-18 under any of five configurations tested
+   (0.0054–0.0804, typically ~0.015–0.027).
 
-2. **ImageNet pretraining largely removes it.** The same ResNet with pretrained
-   weights shows a gap of 0.0054 against 0.0804 from random init, with zero
-   degenerate folds. The plausible mechanism is that pretrained initialisation
-   leaves all five fold-models in similar regions of weight space, so their
-   probabilities land on a comparable scale — which is exactly what the pooled
-   statistic requires.
+2. **Initialisation is not the explanation.** The apparent pretrained/scratch
+   difference rested on one unlucky scratch seed and disappeared across three
+   further seeds.
 
-3. **The remedy transfers across architectures.** Calibration-aware selection
-   reduces the gap by 83% on the random-init ResNet and 81% on the 3D CNN.
+3. **Single-run architecture comparisons are unreliable at this scale.** The
+   random-init `auc` gap has SD 0.0313 across seeds — comparable to its own
+   mean. Any architecture comparison reporting one run per condition, including
+   the first version of this phase, can produce a spurious effect of that size.
 
-4. **The best criterion is not the same in both settings.** On the 3D CNN
-   `neg_brier` was strongest (gap 0.0227); on the random-init ResNet
-   `auc_minus_ece` was (gap 0.0100, and the only criterion with zero degenerate
-   folds, against `neg_brier`'s 0.0138 and 1/5). The paper should therefore
-   recommend calibration-aware selection as a family rather than prescribing one
-   criterion.
+4. **A plausible mechanism for the 3D CNN's larger gap remains open.** Its
+   global average pooling stage was already implicated in Phase 2a (imaging
+   features ~45× weaker than clinical) and Phase 4 (no recoverable spatial
+   attention). Unstable feature scale across folds would produce unstable
+   probability scale, which is what the pooled statistic measures. This is a
+   hypothesis, not a tested result — isolating it would require an ablation of
+   the pooling stage, which would invalidate every Phase 2–6 number and is not
+   pursued.
 
-5. **The pretrained run is a negative control, and it matters.** A method that
-   found instability everywhere would be uninformative. Showing that a common,
-   reasonable setup produces almost no gap is what makes the positive findings
-   credible.
+5. **The ResNet is a useful negative control.** A diagnostic that found
+   instability in every model would be uninformative. That a common, reasonable
+   setup produces almost no gap is what makes the 3D CNN result credible.
 
 ### Limitations (Phase 7)
 
-- **n=1 run per condition.** The pretrained/scratch comparison rests on one run
-  each. Repeating with several `train_seed` values would establish whether the
-  0.0804 gap is stable; until then the effect size should be treated as
-  indicative rather than precise.
-- **OASIS-3 only.** The ResNet has not been applied to ADNI, so the pretraining
-  effect is not yet shown to hold cross-cohort.
-- **Two architectures, not many.** "Not architecture-specific" is supported by
-  two very different architectures agreeing, not by a survey.
-- **Fast convergence complicates the reading.** Training loss falls below 0.01
-  within ~7 epochs in both ResNet conditions, so selection operates on an
-  essentially memorised model. This is itself part of the small-data regime
-  being described, but it means the ResNet's instability and the 3D CNN's may
-  not arise by identical routes.
-- **2.5D discards most of the volume.** Three slices at a fixed anatomical level
-  is a deliberately simple representation chosen for reproducibility, not a
-  competitive use of 3D data.
+- **The pretrained condition has n=1.** It was not repeated across seeds, so
+  the comparison between 0.0054 and the random-init range is asymmetric. Given
+  the finding is now "no reliable difference", this does not change the
+  conclusion, but the pretrained number should not be quoted as precise.
+- **Two architectures, not many.** "Architecture-dependent" is supported by two
+  architectures behaving differently, not by a survey.
+- **OASIS-3 only.** The ResNet has not been applied to ADNI.
+- **Fast convergence.** Training loss falls below 0.01 within ~7 epochs in every
+  ResNet run, so selection operates on an essentially memorised model. This is
+  part of the small-data regime being described but means the ResNet and the 3D
+  CNN may not fail by identical routes.
+- **2.5D discards most of the volume** — three slices at a fixed level, chosen
+  for reproducibility rather than to use 3D data competitively.
 
 ### Artifacts (Phase 7)
 
 - Code: `resnet2d_cv.py`
-- Results: `outputs/resnet2d/resnet2d_folds.json` (pretrained),
-  `outputs/resnet2d_scratch/resnet2d_folds.json` (random init), plus
-  `resnet2d_preds_{criterion}.csv` pooled OOF predictions in each
+- Results: `outputs/resnet2d/` (pretrained), `outputs/resnet2d_scratch/`
+  (seed 0), `outputs/resnet2d_scratch_s1/`, `_s2/`, `_s3/`
 - Reproduce:
   `python resnet2d_cv.py` and
-  `python resnet2d_cv.py --no_pretrained --out_dir outputs/resnet2d_scratch`
+  `python resnet2d_cv.py --no_pretrained --train_seed N --out_dir outputs/resnet2d_scratch_sN --no_checkpoints`
 - Each fold's JSON records the exact sorted subject IDs of its train/val/test
-  splits, the slice indices used, full per-epoch history, and per-criterion
-  checkpoint metadata.
+  splits, the slice indices, the train seed, full per-epoch history, and
+  per-criterion checkpoint metadata.

@@ -33,3 +33,6 @@ outputs/cv_checkpoints/
 !outputs/sample_size/*.png
 !outputs/resnet2d/
 !outputs/resnet2d_scratch/
+!outputs/resnet2d_scratch_s1/
+!outputs/resnet2d_scratch_s2/
+!outputs/resnet2d_scratch_s3/
