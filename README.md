@@ -136,6 +136,7 @@ have looked like the best model in the study.
 |---|---|
 | `gradcam_analysis.py` | Grad-CAM on the imaging branch, comparing `auc`- and `neg_brier`-selected checkpoints; reports brain selectivity against a chance baseline (Phase 4, null result) |
 | `temperature_scaling.py` | fits temperature on each fold's validation split and tests whether post-hoc calibration substitutes for calibration-aware selection (Phase 5) |
+| `sample_size_sweep.py` | subsamples the ADNI predictions at increasing n to test whether the per-fold/pooled gap is an artefact of test-set size (Phase 6) |
 | `tools/verify_results_numbers.py` | cross-checks Phase 3, 4 and 5 numbers in `RESULTS.md` against their committed JSON |
 
 ### OASIS-1 baseline (earlier phase)
@@ -156,6 +157,7 @@ pre-sliced OASIS-1 JPEGs. Retained as a documented reference point
 - `outputs/adni_external/` — external validation results JSON and per-fold prediction CSVs
 - `figures_gradcam/`, `figures_gradcam_fusion/` — Grad-CAM figures and summary JSON
 - `outputs/temperature/` — temperature scaling results and per-fold predictions
+- `outputs/sample_size/` — sample-size sweep results and curve
 - `eda.ipynb`, `exploration.ipynb` — exploratory analysis
 
 ---
@@ -185,7 +187,8 @@ python tools/verify_phase3_numbers.py       # RESULTS.md vs results JSON
 # interpretability and calibration remedies (inference only)
 python gradcam_analysis.py --cohort oasis --mode fusion --fold 4
 python temperature_scaling.py
-python tools/verify_results_numbers.py      # checks Phases 3, 4 and 5
+python sample_size_sweep.py                 # no GPU, seconds
+python tools/verify_results_numbers.py      # checks Phases 3-6
 ```
 
 All training entry points are resume-safe (`--resume`); `train.py` checkpoints
@@ -256,14 +259,20 @@ modes and both selection criteria. The likely mechanism is the global average
 pooling stage, which discards spatial information before the classifier. No
 anatomical claim is made from it.
 
+**The gap is not an artefact of test-set size** (Phase 6). Subsampling the ADNI
+predictions from n=100 to n=1,287 leaves it essentially unchanged — fusion under
+standard selection moves only 0.1763 → 0.1732 across a 13× range — while the
+5th–95th band narrows from [0.140, 0.212] to a point. More evaluation data
+measures the gap more precisely without moving it, which is what a stable
+property looks like rather than measurement noise. This concerns test-set size
+only; it does not establish what more *training* data would do.
+
 Remaining:
 
 1. Additional architectures: 2D-slice ImageNet-pretrained ResNet-18, then
    MedicalNet-pretrained 3D ResNet — the open question is whether the effect is
    specific to this custom CNN or holds for standard backbones
-2. Sample-size sweep: subsample ADNI at increasing n to locate where the
-   per-fold/pooled gap closes
-3. Reverse direction (train ADNI → test OASIS-3) and pooled-cohort CV. Note that
+2. Reverse direction (train ADNI → test OASIS-3) and pooled-cohort CV. Note that
    once ADNI enters training it is permanently unusable as a clean external test
    set, so this comes last
 

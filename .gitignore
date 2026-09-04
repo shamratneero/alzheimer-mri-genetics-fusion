@@ -29,3 +29,5 @@ preprocessed_adni/
 outputs/cv_checkpoints/
 !figures_gradcam*/*.png
 !outputs/temperature/
+!outputs/sample_size/
+!outputs/sample_size/*.png

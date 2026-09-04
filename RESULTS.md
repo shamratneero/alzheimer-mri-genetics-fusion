@@ -827,3 +827,73 @@ separate defect.
 - Results: `outputs/temperature/temperature_results.json`,
   `outputs/temperature/temperature_preds_{mode}_fold{k}_{criterion}.csv`
 - Reproduce: `python temperature_scaling.py`
+---
+
+## Phase 6 — Sample-size sweep (is the gap a test-set-size artefact?)
+
+### The objection this answers
+
+"You trained on 365 subjects. The instability is a small-data artefact — measure
+it on more subjects and it will disappear."
+
+### Method
+
+The ADNI predictions are subsampled at increasing n and both statistics are
+recomputed at each size. No new inference is run: all 30 ADNI prediction CSVs
+already exist, so this is pure resampling of numbers already on disk.
+
+- Sampling is **without replacement** — genuine subsets of the real cohort, not
+  bootstrap resamples.
+- **Stratified by label.** ADNI is CN-heavy (1:1.97); an unstratified draw at
+  n=100 could land with too few AD subjects for a stable AUC.
+- **The identical subject subset is used across all five folds within a draw.**
+  This is required, not cosmetic: the pooled-style statistic compares the five
+  fold-models on the *same* subjects, so drawing different subsets per fold
+  would confound subject composition with model disagreement.
+- 20 draws per size, reported as mean ± SD with a 5th–95th percentile band. A
+  single draw at small n could land anywhere by chance. The full cohort has
+  exactly one possible draw, so its spread is zero by construction.
+
+### Result — the gap does not move
+
+| mode | selection | n=100 | n=200 | n=400 | n=800 | n=1287 |
+|---|---|---|---|---|---|---|
+| clinical | auc | 0.0388 | 0.0406 | 0.0378 | 0.0394 | 0.0388 |
+| clinical | neg_brier | 0.0123 | 0.0119 | 0.0113 | 0.0120 | 0.0118 |
+| imaging | auc | 0.1033 | 0.1044 | 0.1032 | 0.1043 | 0.1039 |
+| imaging | neg_brier | 0.0184 | 0.0168 | 0.0173 | 0.0176 | 0.0176 |
+| fusion | auc | **0.1763** | 0.1715 | 0.1730 | 0.1737 | **0.1732** |
+| fusion | neg_brier | 0.0242 | 0.0194 | 0.0213 | 0.0210 | 0.0208 |
+
+Across a 13× range of test-set size, the largest change in any of the six curves
+is 0.0034 (fusion, `neg_brier`). Fusion under standard selection moves from
+0.1763 to 0.1732 — a change of 0.0031 against a gap of 0.17.
+
+What *does* change is precision. The fusion `auc` 5th–95th band narrows from
+[0.1397, 0.2118] at n=100 to a point at n=1287, and the SD falls from 0.0261 to
+0.0040 at n=800. **More evaluation data measures the gap more precisely without
+moving it.** Measurement noise would shrink toward zero; this converges on a
+stable non-zero value, which is the signature of a real property of the
+fold-models.
+
+The separation between selection criteria is visible at every sample size: the
+`auc` curve sits above the `neg_brier` curve in all three modes at all five
+sizes, so the remedy's effect is not a large-sample phenomenon either.
+
+### What this does NOT establish
+
+This concerns **test-set size only**. It says nothing about whether training on
+more data would fix the instability — that would require retraining on
+progressively larger training sets, which on ADNI would permanently burn the
+clean external test set. The supported claim is the narrow one: *the gap is not
+an artefact of the size of the set it is measured on.* Combined with the gap
+persisting across two independent cohorts of very different sizes (Phase 3),
+this is a reasonable answer to the small-data objection, but it should not be
+stated more strongly than that.
+
+### Artifacts (Phase 6)
+
+- Code: `sample_size_sweep.py`
+- Results: `outputs/sample_size/sample_size_results.json`,
+  `outputs/sample_size/sample_size_curve.png`
+- Reproduce: `python sample_size_sweep.py` (no GPU, no inference — seconds)

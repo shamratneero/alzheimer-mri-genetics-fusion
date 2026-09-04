@@ -157,10 +157,67 @@ def verify_phase5():
     print("Phase 5 checked")
 
 
+# ---------------------------------------------------------------- Phase 6
+def verify_phase6():
+    path = "outputs/sample_size/sample_size_results.json"
+    if not os.path.exists(path):
+        print(f"SKIP Phase 6: {path} not found")
+        return
+    d = json.load(open(path))
+    s = {(r["mode"], r["criterion"], r["n"]): r for r in d}
+    # (mode, criterion): {n: claimed gap}
+    claimed = {
+        ("clinical_only", "auc"):       {100: 0.0388, 200: 0.0406, 400: 0.0378,
+                                          800: 0.0394, 1287: 0.0388},
+        ("clinical_only", "neg_brier"): {100: 0.0123, 200: 0.0119, 400: 0.0113,
+                                          800: 0.0120, 1287: 0.0118},
+        ("imaging_only", "auc"):        {100: 0.1033, 200: 0.1044, 400: 0.1032,
+                                          800: 0.1043, 1287: 0.1039},
+        ("imaging_only", "neg_brier"):  {100: 0.0184, 200: 0.0168, 400: 0.0173,
+                                          800: 0.0176, 1287: 0.0176},
+        ("fusion", "auc"):              {100: 0.1763, 200: 0.1715, 400: 0.1730,
+                                          800: 0.1737, 1287: 0.1732},
+        ("fusion", "neg_brier"):        {100: 0.0242, 200: 0.0194, 400: 0.0213,
+                                          800: 0.0210, 1287: 0.0208},
+    }
+    for (mode, crit), by_n in claimed.items():
+        for n, gap in by_n.items():
+            r = s.get((mode, crit, n))
+            if r is None:
+                FAILURES.append(f"Phase6 {mode}/{crit}/n={n}: missing")
+                continue
+            check(f"Phase6 {mode}/{crit}/n={n} gap", gap, r["gap_mean"])
+
+    # the claim: the gap must stay flat across sample size
+    for (mode, crit), by_n in claimed.items():
+        gaps = [s[(mode, crit, n)]["gap_mean"] for n in sorted(by_n)
+                if (mode, crit, n) in s]
+        if len(gaps) < 2:
+            continue
+        drift = abs(gaps[-1] - gaps[0])
+        if drift > 0.02:
+            FAILURES.append(
+                f"Phase6 {mode}/{crit}: gap drifted {drift:.4f} from smallest "
+                f"to largest n. RESULTS.md claims the gap is flat with sample "
+                f"size - that claim would need revising.")
+
+    # precision must improve with n, even though the gap does not move
+    for (mode, crit), by_n in claimed.items():
+        sds = [(n, s[(mode, crit, n)]["gap_sd"]) for n in sorted(by_n)
+               if (mode, crit, n) in s and s[(mode, crit, n)]["n_repeats"] > 1]
+        if len(sds) >= 2 and sds[-1][1] > sds[0][1]:
+            FAILURES.append(
+                f"Phase6 {mode}/{crit}: SD did not shrink with n "
+                f"({sds[0][1]:.4f} at n={sds[0][0]} -> {sds[-1][1]:.4f} at "
+                f"n={sds[-1][0]}) - unexpected, investigate.")
+    print("Phase 6 checked")
+
+
 if __name__ == "__main__":
     verify_phase3()
     verify_phase4()
     verify_phase5()
+    verify_phase6()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} PROBLEM(S) FOUND:")
