@@ -213,11 +213,95 @@ def verify_phase6():
     print("Phase 6 checked")
 
 
+# ---------------------------------------------------------------- Phase 7
+def verify_phase7():
+    paths = {"pretrained": "outputs/resnet2d/resnet2d_folds.json",
+             "scratch": "outputs/resnet2d_scratch/resnet2d_folds.json"}
+    runs = {}
+    for cond, p in paths.items():
+        if os.path.exists(p):
+            runs[cond] = json.load(open(p))
+    if not runs:
+        print("SKIP Phase 7: no resnet2d_folds.json found")
+        return
+
+    # (condition, criterion): (per_fold, pooled, gap, n_degenerate)
+    claimed = {
+        ("pretrained", "auc"):           (0.7864, 0.7811, 0.0054, 0),
+        ("pretrained", "auc_minus_ece"): (0.7727, 0.7715, 0.0012, 0),
+        ("pretrained", "gated_bacc"):    (0.7864, 0.7811, 0.0054, 0),
+        ("pretrained", "neg_brier"):     (0.7733, 0.7656, 0.0077, 0),
+        ("scratch", "auc"):              (0.8017, 0.7213, 0.0804, 2),
+        ("scratch", "auc_minus_ece"):    (0.8020, 0.7921, 0.0100, 0),
+        ("scratch", "gated_bacc"):       (0.7963, 0.7599, 0.0364, 1),
+        ("scratch", "neg_brier"):        (0.7949, 0.7812, 0.0138, 1),
+    }
+    for (cond, crit), (pf, pooled, gap, ndeg) in claimed.items():
+        if cond not in runs:
+            continue
+        s = runs[cond]["summary"].get(crit)
+        if s is None:
+            FAILURES.append(f"Phase7 {cond}/{crit}: missing")
+            continue
+        check(f"Phase7 {cond}/{crit} per-fold", pf, s["per_fold_mean_auc"])
+        check(f"Phase7 {cond}/{crit} pooled", pooled, s["pooled_oof_auc"])
+        check(f"Phase7 {cond}/{crit} gap", gap, s["gap"])
+        if s["n_degenerate_folds"] != ndeg:
+            FAILURES.append(f"Phase7 {cond}/{crit} degenerate: "
+                            f"RESULTS.md={ndeg} JSON={s['n_degenerate_folds']}")
+
+    # locked experimental constants must not have drifted
+    for cond, d in runs.items():
+        if abs(d.get("slice_fraction", -1) - 0.55) > 1e-9:
+            FAILURES.append(f"Phase7 {cond}: slice_fraction is "
+                            f"{d.get('slice_fraction')}, not the locked 0.55")
+        if d.get("fold_seed") != 42:
+            FAILURES.append(f"Phase7 {cond}: fold_seed is {d.get('fold_seed')}, "
+                            f"not the locked 42 - splits may not match the "
+                            f"primary model")
+        if d.get("slice_offsets") != [-1, 0, 1]:
+            FAILURES.append(f"Phase7 {cond}: slice_offsets "
+                            f"{d.get('slice_offsets')} != locked [-1, 0, 1]")
+
+    # the two conditions must differ ONLY in initialisation
+    if len(runs) == 2:
+        a, b = runs["pretrained"], runs["scratch"]
+        if a.get("pretrained") is not True or b.get("pretrained") is not False:
+            FAILURES.append("Phase7: the two runs are not a pretrained/scratch "
+                            "pair - the ablation claim would be invalid")
+        for key in ["slice_fraction", "fold_seed", "n_folds", "val_frac",
+                    "slice_offsets", "arch"]:
+            if a.get(key) != b.get(key):
+                FAILURES.append(
+                    f"Phase7: '{key}' differs between the pretrained and "
+                    f"scratch runs ({a.get(key)} vs {b.get(key)}). The "
+                    f"ablation requires initialisation to be the ONLY "
+                    f"difference.")
+        # every fold must use identical subject splits across the two runs
+        for i, (fa, fb) in enumerate(zip(a["folds"], b["folds"]), start=1):
+            for split in ["train", "val", "test"]:
+                if fa["subjects"][split] != fb["subjects"][split]:
+                    FAILURES.append(
+                        f"Phase7 fold {i}: {split} subjects differ between "
+                        f"pretrained and scratch runs - not a controlled "
+                        f"ablation")
+        # the headline claim
+        gap_pre = a["summary"]["auc"]["gap"]
+        gap_scr = b["summary"]["auc"]["gap"]
+        if not (gap_scr > gap_pre):
+            FAILURES.append(
+                f"Phase7: scratch gap ({gap_scr:.4f}) is not larger than "
+                f"pretrained ({gap_pre:.4f}). RESULTS.md claims pretraining "
+                f"removes the instability - that claim would need revising.")
+    print("Phase 7 checked")
+
+
 if __name__ == "__main__":
     verify_phase3()
     verify_phase4()
     verify_phase5()
     verify_phase6()
+    verify_phase7()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} PROBLEM(S) FOUND:")

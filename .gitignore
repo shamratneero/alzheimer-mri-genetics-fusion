@@ -31,3 +31,5 @@ outputs/cv_checkpoints/
 !outputs/temperature/
 !outputs/sample_size/
 !outputs/sample_size/*.png
+!outputs/resnet2d/
+!outputs/resnet2d_scratch/
