@@ -37,3 +37,5 @@ outputs/cv_checkpoints/
 !outputs/resnet2d_scratch_s2/
 !outputs/resnet2d_scratch_s3/
 !outputs/scale_test/
+!outputs/calibration/
+!figures_calibration/*.png
