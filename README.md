@@ -130,14 +130,19 @@ have looked like the best model in the study.
 | `inference_adni.py` | applies the five frozen OASIS-3 fold-models to ADNI under both selection criteria |
 | `tools/verify_phase3_numbers.py` | cross-checks the Phase 3 numbers in `RESULTS.md` against the results JSON |
 
-### Analysis (Phases 4-5)
+### Analysis (Phases 4-8)
 
 | script | purpose |
 |---|---|
 | `gradcam_analysis.py` | Grad-CAM on the imaging branch, comparing `auc`- and `neg_brier`-selected checkpoints; reports brain selectivity against a chance baseline (Phase 4, null result) |
 | `temperature_scaling.py` | fits temperature on each fold's validation split and tests whether post-hoc calibration substitutes for calibration-aware selection (Phase 5) |
 | `sample_size_sweep.py` | subsamples the ADNI predictions at increasing n to test whether the per-fold/pooled gap is an artefact of test-set size (Phase 6) |
-| `tools/verify_results_numbers.py` | cross-checks Phase 3, 4 and 5 numbers in `RESULTS.md` against their committed JSON |
+| `resnet2d_cv.py` | ResNet-18 on the identical 5-fold protocol as a negative control; `--train_seed` varies training only, fold construction is locked (Phase 7) |
+| `scale_incoherence_test.py` | rank transform and permutation null testing whether the gap is genuine cross-model scale incoherence or the documented negative bias of pooled AUC (Airola et al.) |
+| `calibration_metrics.py` | ECE, AECE, MCE, OE and Brier on both cohorts plus per-fold reliability diagrams; imports ECE from `train.py` rather than reimplementing it (Phase 8) |
+| `oe_degeneracy_check.py` | tests whether overconfidence error scores one-class degenerate models as well calibrated; reports direction of degeneracy separately and can falsify the hypothesis |
+| `build_experiment_c_inputs.py`, `experiment_c_analysis.py` | tests whether any internal measure predicts a fold-model's external AUC; **null result**, no predictor is sign-consistent and all pooled correlations fall inside a permutation null |
+| `tools/verify_results_numbers.py` | cross-checks Phase 3-7 numbers in `RESULTS.md` against their committed JSON (116 values) |
 
 ### OASIS-1 baseline (earlier phase)
 
@@ -158,6 +163,10 @@ pre-sliced OASIS-1 JPEGs. Retained as a documented reference point
 - `figures_gradcam/`, `figures_gradcam_fusion/` — Grad-CAM figures and summary JSON
 - `outputs/temperature/` — temperature scaling results and per-fold predictions
 - `outputs/sample_size/` — sample-size sweep results and curve
+- `outputs/resnet2d/`, `outputs/resnet2d_scratch*/` — ResNet-18 negative control, pretrained and four scratch seeds
+- `outputs/scale_test/` — rank transform and permutation null results
+- `outputs/calibration/` — five-metric calibration panel and the OE degeneracy check
+- `figures_calibration/` — per-fold reliability diagrams, one panel per mode and criterion
 - `eda.ipynb`, `exploration.ipynb` — exploratory analysis
 
 ---
@@ -188,7 +197,21 @@ python tools/verify_phase3_numbers.py       # RESULTS.md vs results JSON
 python gradcam_analysis.py --cohort oasis --mode fusion --fold 4
 python temperature_scaling.py
 python sample_size_sweep.py                 # no GPU, seconds
-python tools/verify_results_numbers.py      # checks Phases 3-6
+
+# architecture negative control (trains; ~2h per seed)
+python resnet2d_cv.py --pretrained
+python resnet2d_cv.py --train_seed 1 --out_dir outputs/resnet2d_scratch_s1
+
+# estimator-bias control and calibration panel (no GPU, seconds)
+python scale_incoherence_test.py            # rank transform + permutation null
+python calibration_metrics.py               # 5 metrics + reliability diagrams
+python oe_degeneracy_check.py               # OE blind-spot test
+
+# does any internal measure forecast external AUC? (null result)
+python build_experiment_c_inputs.py
+python experiment_c_analysis.py
+
+python tools/verify_results_numbers.py      # checks Phases 3-7, 116 values
 ```
 
 All training entry points are resume-safe (`--resume`); `train.py` checkpoints
@@ -267,14 +290,60 @@ measures the gap more precisely without moving it, which is what a stable
 property looks like rather than measurement noise. This concerns test-set size
 only; it does not establish what more *training* data would do.
 
+**The instability is architecture-dependent** (Phase 7). ResNet-18 was run on
+the identical 5-fold protocol as a negative control. Under standard selection
+the gap is 0.0054 pretrained and 0.0344 ± 0.0313 across four scratch seeds,
+against 0.1200 for the 3D CNN on the same data — large and reproducible in the
+custom CNN, not reliably present in ResNet-18 under any of five configurations.
+A diagnostic that found instability everywhere would be uninformative, so this
+negative control matters. Note that an earlier conclusion drawn from the
+seed-0-versus-pretrained pair — that ImageNet pretraining removes the
+instability — **was withdrawn** after three further seeds showed seed 0 was a
+5× outlier. The retraction is recorded in `RESULTS.md` deliberately rather than
+deleted: it is the same failure this work documents, a single confident-looking
+number with a plausible mechanism available, caught only by repeating and
+reporting spread.
+
+**Five calibration metrics are reported, and they do not agree** (Phase 8).
+ECE, AECE, MCE, OE and Brier were computed on both cohorts from the saved
+predictions — four selection criteria on OASIS-3, two on ADNI (only those two
+checkpoints were pushed through external inference). Calibration-aware
+selection clearly helps where imaging reliance is high: OASIS-3 fusion ECE
+falls 0.3093 → 0.1566 and imaging 0.2254 → 0.1363 under `neg_brier`, with the
+same direction on ADNI. But no criterion wins on all five metrics anywhere.
+`auc_minus_ece` beats `neg_brier` on OASIS-3 fusion ECE (0.1503 vs 0.1566) and
+MCE (0.4932 vs 0.5764), and on clinical — the mode with least to repair —
+`neg_brier` makes ECE *worse* (0.0955 → 0.1246). Calibration-aware selection is
+therefore presented as a **family**, never as a prescription for one criterion.
+
+**Overconfidence error is defeated by the failure mode under study.** OE is
+asymmetric by construction: it sums `weight × mean_prob × max(mean_prob −
+positive_rate, 0)`, so under-confidence contributes exactly zero. A model
+predicting the negative class for every subject therefore scores OE = 0 — a
+perfect result — while scoring worst on every other metric. All three
+degenerate folds in this study (OASIS-3 imaging fold 2, OASIS-3 fusion fold 4,
+ADNI imaging fold 2) score OE exactly 0.0000 against a working-model median of
+0.0299, alongside ECE ≈ 0.48 and Brier ≈ 0.47 on OASIS-3. This does not rest on
+n=3: OE = 0 for an all-CN model is an algebraic consequence, not an empirical
+coincidence. The narrow claim is that OE should not be read as evidence of
+reliability without a companion metric sensitive to under-confidence — not that
+OE is broken, since it never claimed to measure anything else.
+
 Remaining:
 
-1. Additional architectures: 2D-slice ImageNet-pretrained ResNet-18, then
-   MedicalNet-pretrained 3D ResNet — the open question is whether the effect is
-   specific to this custom CNN or holds for standard backbones
+1. Seed repeats on the 3D CNN. The headline numbers are currently n=1, and
+   Phase 7 is this project's own demonstration that single runs at this scale
+   can produce 5× outliers. Imaging seeds 1 and 2 are in progress.
 2. Reverse direction (train ADNI → test OASIS-3) and pooled-cohort CV. Note that
    once ADNI enters training it is permanently unusable as a clean external test
-   set, so this comes last
+   set, so this comes last.
+
+MedicalNet-pretrained 3D ResNet was considered and **deprioritised**: roughly
+125 GPU-hours for one run, and Phase 7 established that single runs here are
+unreliable (SD comparable to the mean), so doing it properly would need ~375
+hours. It is stated as future work rather than run, and would be revisited only
+if a reviewer requires broader 3D architecture validation or a manuscript claim
+cannot be defended without pretrained-architecture evidence.
 
 Known limitations: n=365 for training caps absolute performance; OASIS-3 labels
 derive from CDR whereas ADNI uses physician-assigned criteria (`DXAD` for ADNI1,
