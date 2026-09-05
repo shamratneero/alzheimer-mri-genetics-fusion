@@ -36,3 +36,4 @@ outputs/cv_checkpoints/
 !outputs/resnet2d_scratch_s1/
 !outputs/resnet2d_scratch_s2/
 !outputs/resnet2d_scratch_s3/
+!outputs/scale_test/
