@@ -128,6 +128,10 @@ SELECTION_CRITERIA = {
     "gated_bacc": _score_gated_bacc,
     "neg_brier": _score_neg_brier,
 }
+FOLD_SEED = 42   # LOCKED: fold construction only. Never a CLI argument -
+                 # changing it would build a different CV experiment while
+                 # still being called a seed repeat, and the results would
+                 # not be comparable to the committed Phase 2 numbers.
 PRIMARY_CRITERION = "auc"    # what the legacy `test`/`predictions` fields report
 
 
@@ -589,7 +593,9 @@ def main():
                          "model is compared against the strongest non-imaging "
                          "baseline rather than a weakened one")
     ap.add_argument("--patience", type=int, default=15)
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--train_seed", type=int, default=42,
+                    help="training randomness only (weight init, shuffling). "
+                         "Folds use the locked FOLD_SEED and are unaffected.")
     ap.add_argument("--resume", action="store_true",
                     help="skip folds already saved to disk")
     ap.add_argument("--compare", nargs="+", default=None,
@@ -609,12 +615,12 @@ def main():
     if args.tag is None:
         args.tag = f"cv_{args.mode}"
 
-    set_seed(args.seed)
+    set_seed(args.train_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     print(f"5-fold CV  |  mode={args.mode}  |  tag={args.tag}\n")
 
-    folds = build_cv_folds(COHORT, n_folds=args.n_folds, seed=args.seed)
+    folds = build_cv_folds(COHORT, n_folds=args.n_folds, seed=FOLD_SEED)
     for i, (tr, va, te) in enumerate(folds, 1):
         print(f"  fold {i}: train {len(tr):3d}  val {len(va):3d}  test {len(te):3d}"
               f"  (test {te['label'].sum()} AD / {(te['label']==0).sum()} CN)")
@@ -642,7 +648,7 @@ def main():
                 print(f"  fold {i}: already done, skipping ({len(cks)} checkpoints present)")
             continue
         print(f"\n  --- fold {i}/{len(folds)} ---")
-        set_seed(args.seed + i)          # different init per fold, reproducible
+        set_seed(args.train_seed + i)          # different init per fold, reproducible
         res = run_fold(i, tr, va, te, args, device)
         results.append(res)
         results.sort(key=lambda r: r["fold"])
