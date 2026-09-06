@@ -1036,3 +1036,175 @@ reproduced on ADNI in Phase 3).
 - Each fold's JSON records the exact sorted subject IDs of its train/val/test
   splits, the slice indices, the train seed, full per-epoch history, and
   per-criterion checkpoint metadata.
+## Phase 8 — Five-metric calibration panel and OE degeneracy check
+
+### Purpose
+
+Dawood et al. (2023, Medical Image Analysis) — the closest prior work on
+calibration-aware model selection — report five calibration metrics (ECE, AECE,
+MCE, OE, Brier) and show that conclusions can differ depending on which metric
+is examined. Reporting fewer metrics against that standard is an easy reviewer
+objection. Phase 8 closes it by computing the same five-metric panel on both
+cohorts from the already-saved predictions, with no GPU and no new inference.
+
+A second goal is to test whether overconfidence error (OE) has a structural
+blind spot for the failure mode under study.
+
+### Method
+
+**Metrics** — all computed on the same positive-rate (fraction of bin that is
+class 1) convention, matching train.py:
+
+- **ECE** — equal-width bins, weighted mean |mean\_prob − positive\_rate|
+- **AECE** — equal-mass bins (adaptive; robust to skewed probability
+  distributions that make most ECE mass land in one bin)
+- **MCE** — worst single bin's |mean\_prob − positive\_rate|
+- **OE** — sum of weight × mean\_prob × max(mean\_prob − positive\_rate, 0);
+  asymmetric by construction, penalises overconfidence only
+
+**ECE is imported from train.py, not reimplemented.** An earlier version used
+per-bin accuracy rather than per-bin positive rate — different quantities. All
+four metrics are computed on the same convention.
+
+**Scope** — OASIS-3: all four criteria (auc, auc\_minus\_ece, gated\_bacc,
+neg\_brier), four criteria × five metrics × three modes. ADNI: auc and neg\_brier
+only — the other two checkpoints were not pushed through external inference and
+fabricating them would be wrong.
+
+**Reliability diagrams** — per-fold curves overlaid (not aggregated) in one
+panel per (mode, criterion), so between-fold disagreement is visible rather than
+averaged away.
+
+### Result — no criterion wins on all five metrics anywhere
+
+**OASIS-3 (per-fold mean across 5 folds):**
+
+| mode | criterion | ECE | AECE | MCE | OE | Brier |
+|---|---|---|---|---|---|---|
+| clinical | auc | 0.0955 | 0.1865 | 0.3390 | 0.0143 | 0.2038 |
+| clinical | auc\_minus\_ece | 0.1025 | 0.1843 | 0.3112 | 0.0155 | 0.2114 |
+| clinical | gated\_bacc | 0.1037 | 0.1819 | 0.2763 | 0.0161 | 0.2031 |
+| clinical | neg\_brier | 0.1246 | 0.1677 | 0.2759 | 0.0192 | 0.1895 |
+| imaging | auc | 0.2254 | 0.2259 | 0.4987 | 0.0276 | 0.2446 |
+| imaging | auc\_minus\_ece | 0.1853 | 0.1918 | 0.6268 | 0.0806 | 0.1924 |
+| imaging | gated\_bacc | 0.1847 | 0.1828 | 0.5550 | 0.0321 | 0.2029 |
+| imaging | neg\_brier | 0.1363 | 0.1451 | 0.5277 | 0.0343 | 0.1711 |
+| fusion | auc | 0.3093 | 0.3255 | 0.6478 | 0.0515 | 0.3058 |
+| fusion | auc\_minus\_ece | 0.1503 | 0.1731 | 0.4932 | 0.0709 | 0.1825 |
+| fusion | gated\_bacc | 0.1643 | 0.1834 | 0.5229 | 0.0348 | 0.1932 |
+| fusion | neg\_brier | 0.1566 | 0.1816 | 0.5764 | 0.0688 | 0.1816 |
+
+**ADNI (per-fold mean across 5 folds):**
+
+| mode | criterion | ECE | AECE | MCE | OE | Brier |
+|---|---|---|---|---|---|---|
+| clinical | auc | 0.1617 | 0.1706 | 0.2242 | 0.0706 | 0.2127 |
+| clinical | neg\_brier | 0.1389 | 0.1475 | 0.2240 | 0.0571 | 0.1963 |
+| imaging | auc | 0.2085 | 0.2082 | 0.4979 | 0.0890 | 0.2452 |
+| imaging | neg\_brier | 0.1753 | 0.1747 | 0.4118 | 0.1091 | 0.2193 |
+| fusion | auc | 0.2701 | 0.2723 | 0.5216 | 0.1153 | 0.2789 |
+| fusion | neg\_brier | 0.2404 | 0.2394 | 0.4793 | 0.1673 | 0.2450 |
+
+**Key observations:**
+
+1. **neg\_brier clearly helps on imaging-reliant modes.** OASIS-3 fusion ECE
+   0.3093 → 0.1566 and imaging ECE 0.2254 → 0.1363 under neg\_brier; same
+   direction on ADNI (fusion 0.2701 → 0.2404, imaging 0.2085 → 0.1753).
+
+2. **No criterion wins on all five metrics anywhere** — confirming Dawood et
+   al.'s finding. auc\_minus\_ece beats neg\_brier on OASIS-3 fusion ECE (0.1503
+   vs 0.1566) and MCE (0.4932 vs 5764). On clinical, neg\_brier makes ECE
+   *worse* (0.0955 → 0.1246). Calibration-aware selection is a family of
+   criteria, not a single prescribed solution.
+
+3. **OE gets worse under neg\_brier on ADNI imaging and fusion** (imaging
+   0.0890 → 0.1091; fusion 0.1153 → 0.1673). The OE finding below explains why
+   the auc baseline's low OE should not be read as evidence of reliability.
+
+### Finding — OE is algebraically defeated by the failure mode under study
+
+OE is asymmetric by construction:
+
+    OE = Σ_bins  weight × mean_prob × max(mean_prob − positive_rate, 0)
+
+The max(...,0) means under-confidence contributes exactly zero. A model that
+predicts the negative class (CN) for every subject has probabilities near zero,
+so mean\_prob − positive\_rate is negative in every bin, and OE = 0 exactly —
+a perfect calibration score while the model is clinically useless.
+
+**Verified on committed data:** all three degenerate folds in this study score
+OE exactly 0.0000, against a working-model median of 0.0299:
+
+| cohort | mode | criterion | fold | OE | ECE | Brier |
+|---|---|---|---|---|---|---|
+| OASIS-3 | imaging | auc | 2 | 0.0000 | 0.4799 | 0.4753 |
+| OASIS-3 | fusion | auc | 4 | 0.0000 | 0.4860 | 0.4741 |
+| ADNI | imaging | auc | 2 | 0.0000 | 0.2951 | 0.3038 |
+
+**This does not rest on n=3.** OE = 0 for an all-CN model is an algebraic
+consequence of the asymmetric formulation, not an empirical coincidence. Any
+model predicting near-zero probabilities for all subjects scores OE ≈ 0,
+always. The three folds are demonstrations of a provable property.
+
+**Narrow claim only:** OE should not be read as evidence of reliability without
+a companion metric sensitive to under-confidence. This is not a claim that OE
+is broken — it was never designed to penalise under-confidence.
+
+### Seed repeats — imaging_only (3D CNN)
+
+The imaging_only headline gap (0.1200 OASIS-3, 0.1039 ADNI) was n=1 at the
+time Phase 7 reported it. Phase 7 is also this project's own demonstration that
+single runs at this scale can produce 5× outliers. Seed repeats close this
+exposure.
+
+**seed1\_imaging (--train\_seed 1, 403 min):**
+
+Per-fold auc-selected test AUC: 0.825 / 0.835 / 0.849 / 0.885 / 0.891
+(mean 0.857, std 0.030). Pooled OOF AUC 0.804. Against the original run's
+0.814 / 0.846 / 0.837 / 0.859 / 0.890 (mean 0.829, pooled 0.729) — same
+range and spread, confirming the pipeline reproduces under a different seed.
+
+neg\_brier vs auc across seed 1:
+
+| fold | auc | neg\_brier | result |
+|---|---|---|---|
+| 1 | 0.825 | 0.829 | win |
+| 2 | 0.835 | 0.862 | win |
+| 3 | 0.849 | 0.923 | win (+0.074 AUC, +0.19 bacc) |
+| 4 | 0.885 | 0.885 | tie (all four criteria, same epoch) |
+| 5 | 0.891 | 0.878 | loss (by 0.013) |
+
+Across both seeds (10 fold-runs): neg\_brier wins 6, ties 2, loses 1.
+
+**Important negative finding: the specific degenerate fold does not reproduce
+across seeds.** Original imaging fold 2 had test bacc exactly 0.500; under
+seed 1 the same fold gives 0.667. No degenerate test fold appears in seed 1.
+Degeneracy OCCURRENCE is stochastic, not deterministic — the paper must not
+say "fold 2 is degenerate." The measured gap reproduces; the identity of the
+affected fold varies.
+
+**Fold 4 note:** all four criteria selected the same epoch (ep 14, auc 0.885,
+bacc 0.800). This is evidence that the criteria do not diverge on every fold —
+only when the discrimination peak and calibration peak fail to coincide, which
+is exactly when the selection choice matters.
+
+**The phenomenon is visible live in training logs.** Seed-1 fold 2 epoch 10:
+val\_auc 0.938, val\_bacc 0.500. Fold 3 epoch 6: val\_auc 0.935, val\_bacc 0.500.
+Discrimination-looking healthy while the model has already collapsed to one
+class — the mechanism the paper documents.
+
+Seed 2 (--train\_seed 2) is running.
+
+### Artifacts (Phase 8)
+
+- Code: `calibration_metrics.py`, `oe_degeneracy_check.py`
+- Results: `outputs/calibration/calibration_metrics.csv` (90 rows),
+  `outputs/calibration/oe_degeneracy_check.csv`
+- Figures: `figures_calibration/reliability_{cohort}_{mode}_{criterion}.png`
+  (18 figures, per-fold curves overlaid)
+- Seed results: `outputs/cv/seed1_imaging_folds.json`,
+  `outputs/cv/seed1_imaging_summary.json`
+- Reproduce:
+  `python calibration_metrics.py`
+  `python oe_degeneracy_check.py`
+  `python cross_validate.py --mode imaging_only --tag seed1_imaging --train_seed 1`

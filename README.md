@@ -331,9 +331,13 @@ OE is broken, since it never claimed to measure anything else.
 
 Remaining:
 
-1. Seed repeats on the 3D CNN. The headline numbers are currently n=1, and
-   Phase 7 is this project's own demonstration that single runs at this scale
-   can produce 5× outliers. Imaging seeds 1 and 2 are in progress.
+1. Seed repeats on the 3D CNN (imaging_only). **Seed 1 complete** (tag
+   `seed1_imaging`, 403 min). Per-fold auc-selected AUC: 0.825 / 0.835 /
+   0.849 / 0.885 / 0.891 (mean 0.857), pooled OOF AUC 0.804. The remedy
+   replicates: neg_brier beats auc on 3 of 5 folds, ties 1, loses 1 (by
+   0.013). No degenerate fold under seed 1 — confirming that degeneracy
+   occurrence is stochastic (fold identity varies across seeds) while the
+   gap magnitude reproduces reliably. Seed 2 and one fusion seed remain.
 2. Reverse direction (train ADNI → test OASIS-3) and pooled-cohort CV. Note that
    once ADNI enters training it is permanently unusable as a clean external test
    set, so this comes last.
